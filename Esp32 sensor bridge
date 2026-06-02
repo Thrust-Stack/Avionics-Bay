@@ -1,0 +1,101 @@
+/*
+ * Avionics Sensor Bridge - ESP32
+ * 
+ * Reads GPS on UART2 and MPU6050 on I2C simultaneously,
+ * forwards both to USB serial for the laptop to parse.
+ * 
+ * Wiring:
+ *   GPS VIN  → ESP32 3.3V       
+ *   GPS GND  → ESP32 GND        
+ *   GPS TX   → ESP32 GPIO 16    
+ *   GPS RX   → ESP32 GPIO 17    
+ *   MPU VCC → ESP32 3.3V
+ *   MPU GND → ESP32 GND
+ *   MPU SDA → ESP32 GPIO 21
+ *   MPU SCL → ESP32 GPIO 22
+ * 
+ * Install libraries in Arduino IDE (Tools → Manage Libraries):
+ *   - Adafruit MPU6050
+ *   - Adafruit Unified Sensor
+ * 
+ * Board: NodeMCU-32S
+ */
+
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+
+// GPS config
+#define GPS_RX_PIN 16
+#define GPS_TX_PIN 17
+#define GPS_BAUD   9600
+
+// IMU config
+Adafruit_MPU6050 mpu;
+unsigned long lastIMU = 0;
+const unsigned long IMU_INTERVAL = 50;  // 50ms = 20Hz
+
+void setup() {
+  // USB serial to laptop
+  Serial.begin(115200);
+  while (!Serial) { delay(10); }
+
+  // GPS serial
+  Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+
+  // I2C for MPU6050
+  Wire.begin(21, 22);
+
+  Serial.println("==========================================");
+  Serial.println("  Avionics Sensor Bridge");
+  Serial.println("==========================================");
+
+  // Initialize MPU6050
+  if (!mpu.begin()) {
+    Serial.println("[ERROR] MPU6050 not found! Check wiring.");
+    Serial.println("  SDA → GPIO 21, SCL → GPIO 22");
+  } else {
+    Serial.println("[OK] MPU6050 initialized");
+
+    // Configure ranges
+    mpu.setAccelerometerRange(MPU6050_RANGE_16_G);  // ±16g for rocket forces
+    mpu.setGyroRange(MPU6050_RANGE_500_DEG);        // ±500°/s for rotation
+    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);     // Smooth out vibration
+  }
+
+  Serial.println("[OK] GPS UART initialized");
+  Serial.println("==========================================");
+  Serial.println();
+}
+
+void loop() {
+  // Forward GPS NMEA sentences to USB
+  while (Serial2.available()) {
+    char c = Serial2.read();
+    Serial.write(c);
+  }
+
+  // Read and send IMU data at fixed interval
+  if (millis() - lastIMU >= IMU_INTERVAL) {
+    lastIMU = millis();
+
+    sensors_event_t accel, gyro, temp;
+    mpu.getEvent(&accel, &gyro, &temp);
+
+    // Send as custom $IMU sentence
+    // Format: $IMU,accelX,accelY,accelZ,gyroX,gyroY,gyroZ
+    Serial.print("$IMU,");
+    Serial.print(accel.acceleration.x, 3); Serial.print(",");
+    Serial.print(accel.acceleration.y, 3); Serial.print(",");
+    Serial.print(accel.acceleration.z, 3); Serial.print(",");
+    Serial.print(gyro.gyro.x, 3); Serial.print(",");
+    Serial.print(gyro.gyro.y, 3); Serial.print(",");
+    Serial.println(gyro.gyro.z, 3);
+  }
+
+  // Forward commands from laptop to GPS
+  while (Serial.available()) {
+    char c = Serial.read();
+    Serial2.write(c);
+  }
+}
