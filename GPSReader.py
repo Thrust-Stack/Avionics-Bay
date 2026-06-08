@@ -12,6 +12,7 @@ Setup:
 """
 
 import serial
+import serial.tools.list_ports
 import time
 import sys
 
@@ -25,9 +26,27 @@ except ImportError:
 # ============================================================
 # CONFIGURATION
 # ============================================================
-COM_PORT = "COM6"
+COM_PORT = None   # Set to e.g. "/dev/ttyUSB0" to override auto-detect
 BAUD_RATE = 115200
+
+# USB-serial chip descriptions used by common ESP32 dev boards
+ESP32_KEYWORDS = ["cp210", "ch340", "ch341", "esp32", "uart", "usb serial", "usb-serial"]
 # ============================================================
+
+
+def find_esp32_port():
+    """Return the first serial port that looks like an ESP32 USB-serial adapter."""
+    ports = serial.tools.list_ports.comports()
+    for port in ports:
+        desc = (port.description or "").lower()
+        hwid = (port.hwid or "").lower()
+        if any(kw in desc or kw in hwid for kw in ESP32_KEYWORDS):
+            return port.device
+    # Fallback: return first /dev/ttyUSB* or /dev/ttyACM* found
+    for port in ports:
+        if "ttyusb" in port.device.lower() or "ttyacm" in port.device.lower():
+            return port.device
+    return None
 
 
 def degrees_to_compass(degrees):
@@ -116,17 +135,22 @@ def parse_gps(line):
 
 
 def main():
+    port = COM_PORT or find_esp32_port()
+    if port is None:
+        print("ERROR: No ESP32 port found. Plug in the ESP32 or set COM_PORT manually.")
+        sys.exit(1)
+
     print("==========================================")
     print("  Avionics Telemetry")
     print("==========================================")
-    print(f"  Port: {COM_PORT}")
+    print(f"  Port: {port}")
     print("  Press Ctrl+C to stop")
     print("==========================================\n")
 
     try:
-        ser = serial.Serial(COM_PORT, BAUD_RATE, timeout=1)
+        ser = serial.Serial(port, BAUD_RATE, timeout=1)
     except serial.SerialException as e:
-        print(f"ERROR: Could not open {COM_PORT}")
+        print(f"ERROR: Could not open {port}")
         print(f"  {e}")
         sys.exit(1)
 
