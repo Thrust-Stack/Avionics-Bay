@@ -35,6 +35,9 @@ Adafruit_MPU6050 mpu;
 unsigned long lastIMU = 0;
 const unsigned long IMU_INTERVAL = 50;  // 50ms = 20Hz
 
+// GPS line buffer — prevents $IMU from being injected mid-sentence
+String gpsBuffer = "";
+
 void setup() {
   // USB serial to laptop
   Serial.begin(115200);
@@ -69,10 +72,15 @@ void setup() {
 }
 
 void loop() {
-  // Forward GPS NMEA sentences to USB
+  // Buffer GPS bytes and only forward complete lines so $IMU never
+  // gets injected in the middle of an NMEA sentence.
   while (Serial2.available()) {
     char c = Serial2.read();
-    Serial.write(c);
+    gpsBuffer += c;
+    if (c == '\n') {
+      Serial.print(gpsBuffer);
+      gpsBuffer = "";
+    }
   }
 
   // Read and send IMU data at fixed interval
