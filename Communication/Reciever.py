@@ -7,13 +7,14 @@ PORT = "COM4"  # Change this to your receiver ESP32 port
 
 def on_receive(packet, interface):
     decoded = packet.get("decoded", {})
-
-    if "text" in decoded:
-        print("Received text:", decoded["text"])
+    text = decoded.get("text")
+    if text:
+        sender = packet.get("fromId", "unknown")
+        print(f"Received from {sender}: {text}")
     else:
         print("Received packet:", packet)
 
-pub.subscribe(on_receive, "meshtastic.receive.data")
+pub.subscribe(on_receive, "meshtastic.receive.text")
 
 interface = meshtastic.serial_interface.SerialInterface(devPath=PORT)
 
