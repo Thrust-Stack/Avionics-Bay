@@ -1,14 +1,14 @@
 """
 Avionics Telemetry - Laptop Side
 
-Reads combined GPS + IMU data from the ESP32 bridge.
-GPS data arrives as NMEA sentences, IMU data as $IMU custom sentences.
+Reads combined GPS + IMU + BMP585 data from the ESP32 bridge.
+GPS data arrives as NMEA sentences, IMU as $IMU, BMP585 altitude as $ALT.
 
 Setup:
   1. Upload avionics_bridge.ino to ESP32
   2. pip install pyserial pynmea2
   3. Update COM_PORT below
-  4. python AvionicsTelemetry.py
+  4. python GPSReader.py
 """
 
 import serial
@@ -42,7 +42,6 @@ def find_esp32_port():
         hwid = (port.hwid or "").lower()
         if any(kw in desc or kw in hwid for kw in ESP32_KEYWORDS):
             return port.device
-    # Fallback: return first /dev/ttyUSB* or /dev/ttyACM* found
     for port in ports:
         if "ttyusb" in port.device.lower() or "ttyacm" in port.device.lower():
             return port.device
@@ -72,6 +71,17 @@ def degrees_to_compass(degrees):
         return "NW"
 
 
+def parse_bmp(line):
+    """Parse custom $ALT sentence: $ALT,<agl_metres>"""
+    try:
+        parts = line.strip().split(",")
+        if len(parts) != 2 or parts[0] != "$ALT":
+            return None
+        return float(parts[1])
+    except (ValueError, IndexError):
+        return None
+
+
 def parse_imu(line):
     """Parse custom $IMU sentence from ESP32."""
     try:
@@ -87,30 +97,30 @@ def parse_imu(line):
         gz = float(parts[6])
 
         return (
-            f"[IMU] Accel: X={ax:.2f} Y={ay:.2f} Z={az:.2f} m/s²  "
-            f"Gyro: X={gx:.2f} Y={gy:.2f} Z={gz:.2f} °/s"
+            f"[IMU] Accel: X={ax:.2f} Y={ay:.2f} Z={az:.2f} m/s2  "
+            f"Gyro: X={gx:.2f} Y={gy:.2f} Z={gz:.2f} deg/s"
         )
     except (ValueError, IndexError):
         return None
 
 
 def parse_gps(line):
-    """Parse NMEA RMC sentence for GPS telemetry."""
+    """Parse NMEA sentences for GPS telemetry."""
     try:
         msg = pynmea2.parse(line)
     except (pynmea2.ParseError, ValueError):
         return None, None
 
-    # GGA - grab altitude
+    # GGA - grab MSL altitude
     if isinstance(msg, pynmea2.types.talker.GGA):
         try:
             if int(msg.gps_qual) > 0:
-                return "alt", f"{msg.altitude}{msg.altitude_units}"
+                return "alt", f"{float(msg.altitude):.1f}m"
         except (ValueError, AttributeError, TypeError):
             pass
         return "alt", None
 
-    # RMC - main GPS line
+    # RMC - main GPS fix line
     if isinstance(msg, pynmea2.types.talker.RMC):
         if msg.status != "A":
             return "no_fix", None
@@ -159,14 +169,25 @@ def main():
 
     gps_fix = False
     latest_alt = "---"
+    latest_bmp_alt = "---"
     gps_count = 0
     imu_count = 0
+    alt_count = 0
 
     try:
         while True:
             line = ser.readline().decode("ascii", errors="replace").strip()
 
             if not line:
+                continue
+
+            # BMP585 AGL altitude at 10Hz
+            if line.startswith("$ALT"):
+                agl = parse_bmp(line)
+                if agl is not None:
+                    alt_count += 1
+                    latest_bmp_alt = f"{agl:.1f}m"
+                    print(f"[ALT] Altitude: {latest_bmp_alt}")
                 continue
 
             # IMU data
@@ -203,13 +224,13 @@ def main():
 
                         if not gps_fix:
                             gps_fix = True
-                            print("\n  ★ GPS FIX ACQUIRED! ★\n")
+                            print("\n  GPS FIX ACQUIRED!\n")
 
                         gps_count += 1
                         print(
                             f"[GPS] Lat: {lat}  Lon: {lon}  "
-                            f"Alt: {latest_alt}  Speed: {speed:.1f} mph  "
-                            f"Heading: {heading}"
+                            f"ALT: {latest_alt}  "
+                            f"Speed: {speed:.1f} mph  Heading: {heading}"
                         )
 
                 continue
@@ -219,7 +240,7 @@ def main():
                 print(f"[ESP32] {line}")
 
     except KeyboardInterrupt:
-        print(f"\n\nStopped. GPS updates: {gps_count}  IMU updates: {imu_count}")
+        print(f"\n\nStopped. GPS: {gps_count}  IMU: {imu_count}  ALT: {alt_count}")
         ser.close()
 
 

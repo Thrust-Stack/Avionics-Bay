@@ -146,7 +146,7 @@ GPS V3 ────────────────────────�
 
 | Device  | I2C Address | AD0/SDO Pin |
 |---------|-------------|-------------|
-| BMP585  | 0x47        | Default     |
+| BMP585  | 0x46        | SDO floating/GND (default) |
 | MPU6050 | 0x68        | AD0 → GND   |
 
 > Both devices share GPIO 21 (SDA) and GPIO 22 (SCL).  
