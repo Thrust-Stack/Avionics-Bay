@@ -10,13 +10,13 @@ def on_receive(packet, interface):
     text = decoded.get("text")
     if text:
         sender = packet.get("fromId", "unknown")
-        print(f"Received from {sender}: {text}")
+        print(f"Received from {sender}: {text}", flush=True)
     else:
-        print("Received packet:", packet)
+        print("Received non-text packet:", packet, flush=True)
 
 interface = meshtastic.serial_interface.SerialInterface(devPath=PORT)
 
-pub.subscribe(on_receive, "meshtastic.receive.text")
+pub.subscribe(on_receive, "meshtastic.receive")
 
 print("Listening for Meshtastic messages...")
 

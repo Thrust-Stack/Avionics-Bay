@@ -19,7 +19,7 @@ messages = [
 for message in messages:
     interface.sendText(message)
     print("Sent:", message)
-    time.sleep(3)
+    time.sleep(8)
 
 time.sleep(1)
 interface.close()
