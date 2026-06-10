@@ -9,10 +9,17 @@ PORT = "COM8"
 
 interface = meshtastic.serial_interface.SerialInterface(devPath=PORT)
 
-message = "Hello my name is Anderdingus .... OHHH SHITTINGS!!!"
-interface.sendText(message)
+messages = [
+    "Hello my name is Anderdingus!!!!!!!!!!",
+    "OHHH SHITTINGS!!!",
+    "Im boutta BUSSTTTTTT",
+    "I Finished!!!",
+]
 
-print("Sent:", message)
+for message in messages:
+    interface.sendText(message)
+    print("Sent:", message)
+    time.sleep(3)
 
-time.sleep(2)
+time.sleep(1)
 interface.close()
