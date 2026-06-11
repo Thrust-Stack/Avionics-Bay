@@ -1,6 +1,7 @@
 # Avionics-Bay
 
 # Wiring Reference
+<<<<<<< HEAD
 
 Complete pin assignments for the avionics bay.
 
@@ -8,6 +9,15 @@ Complete pin assignments for the avionics bay.
 
 ## System Overview
 
+=======
+ 
+Complete pin assignments for the avionics bay.
+ 
+---
+ 
+## System Overview
+ 
+>>>>>>> origin/Meshtastic-Programs
 ```
 BMP585 ──┐
           ├── I2C (GPIO 21/22) ──► ESP32 ──── UART1 (GPIO 2/4) ──► Pi 5
@@ -21,11 +31,19 @@ GPS V3 ────────────────────────�
                                                        ↑
                                                5V BEC (dedicated power)
 ```
+<<<<<<< HEAD
 
 ---
 
 ## ESP32 Pin Assignments
 
+=======
+ 
+---
+ 
+## ESP32 Pin Assignments
+ 
+>>>>>>> origin/Meshtastic-Programs
 | GPIO | Function       | Connected To              | Wire Color |
 |------|----------------|---------------------------|------------|
 | 16   | UART2 RX       | GPS TX                    | Green      |
@@ -34,23 +52,37 @@ GPS V3 ────────────────────────�
 | 22   | I2C SCL        | BMP585 SCL + MPU6050 SCL  | Orange     |
 | 13   | PWM (Servo 1)  | Servo 1 signal            | White      |
 | 14   | PWM (Servo 2)  | Servo 2 signal            | White      |
+<<<<<<< HEAD
 | 25   | PWM (Servo 4)  | Servo 3 signal            | White      |
 | 26   | PWM (Servo 3)  | Servo 4 signal            | White      |
+=======
+| 25   | PWM (Servo 3)  | Servo 3 signal            | White      |
+| 26   | PWM (Servo 4)  | Servo 4 signal            | White      |
+>>>>>>> origin/Meshtastic-Programs
 | 4    | UART1 RX       | Pi 5 GPIO 14 (TX)         | Purple     |
 | 2    | UART1 TX       | Pi 5 GPIO 15 (RX)         | Purple     |
 | 3.3V | Power out      | GPS VIN, BMP585 VIN, MPU VCC | Red     |
 | GND  | Common ground  | All components + BEC GND  | Black      |
+<<<<<<< HEAD
 
 ---
 
 ## Adafruit Ultimate GPS V3
 
+=======
+ 
+---
+ 
+## Adafruit Ultimate GPS V3
+ 
+>>>>>>> origin/Meshtastic-Programs
 | GPS Pin | ESP32 Pin | Notes                        |
 |---------|-----------|------------------------------|
 | VIN     | 3.3V      | Do NOT use 5V                |
 | GND     | GND       | Common ground                |
 | TX      | GPIO 16   | GPS transmits → ESP32 reads  |
 | RX      | GPIO 17   | ESP32 sends commands to GPS  |
+<<<<<<< HEAD
 
 > Baud rate: 9600 (default). UART2 on ESP32.
 
@@ -58,12 +90,22 @@ GPS V3 ────────────────────────�
 
 ## BMP585 (Altimeter)
 
+=======
+ 
+> Baud rate: 9600 (default). UART2 on ESP32.
+ 
+---
+ 
+## BMP585 (Altimeter)
+ 
+>>>>>>> origin/Meshtastic-Programs
 | BMP585 Pin | ESP32 Pin | Notes                         |
 |------------|-----------|-------------------------------|
 | VIN        | 3.3V      |                               |
 | GND        | GND       | Common ground                 |
 | SDA        | GPIO 21   | Shared I2C bus with MPU6050   |
 | SCL        | GPIO 22   | Shared I2C bus with MPU6050   |
+<<<<<<< HEAD
 
 > I2C address: 0x47. Shares bus with MPU6050.
 
@@ -71,6 +113,15 @@ GPS V3 ────────────────────────�
 
 ## MPU6050 (IMU)
 
+=======
+ 
+> I2C address: 0x47. Shares bus with MPU6050.
+ 
+---
+ 
+## MPU6050 (IMU)
+ 
+>>>>>>> origin/Meshtastic-Programs
 | MPU6050 Pin | ESP32 Pin | Notes                         |
 |-------------|-----------|-------------------------------|
 | VCC         | 3.3V      |                               |
@@ -78,6 +129,7 @@ GPS V3 ────────────────────────�
 | SDA         | GPIO 21   | Shared I2C bus with BMP585    |
 | SCL         | GPIO 22   | Shared I2C bus with BMP585    |
 | AD0         | GND       | Sets I2C address to 0x68      |
+<<<<<<< HEAD
 
 > I2C address: 0x68 (AD0 → GND). Shares bus with BMP585.
 
@@ -85,16 +137,30 @@ GPS V3 ────────────────────────�
 
 ## BMS-127WV+ Servos (×4)
 
+=======
+ 
+> I2C address: 0x68 (AD0 → GND). Shares bus with BMP585.
+ 
+---
+ 
+## BMS-127WV+ Servos (×4)
+ 
+>>>>>>> origin/Meshtastic-Programs
 | Servo Wire  | Connects To         | Notes                              |
 |-------------|---------------------|------------------------------------|
 | Red (VCC)   | BEC 5V output       | All 4 servos share BEC power rail  |
 | Brown (GND) | Common GND          | Shared with ESP32 and BEC          |
 | Orange (SIG)| ESP32 GPIO (below)  | PWM signal at 250Hz                |
+<<<<<<< HEAD
 
+=======
+ 
+>>>>>>> origin/Meshtastic-Programs
 | Servo   | Signal Pin | Notes          |
 |---------|------------|----------------|
 | Servo 1 | GPIO 13    | Fin 1 / TVC X+ |
 | Servo 2 | GPIO 14    | Fin 2 / TVC X- |
+<<<<<<< HEAD
 | Servo 3 | GPIO 26   | Fin 3 / TVC Y+ |
 | Servo 4 | GPIO 25   | Fin 4 / TVC Y- |
 
@@ -105,12 +171,25 @@ GPS V3 ────────────────────────�
 
 ## 5V BEC (Servo Power)
 
+=======
+| Servo 3 | GPIO 25    | Fin 3 / TVC Y+ |
+| Servo 4 | GPIO 26    | Fin 4 / TVC Y- |
+ 
+> PWM: 250Hz, pulse range 1000–2000μs, neutral 1520μs.  
+> ⚠️ Never power servos from ESP32 — use a dedicated BEC.
+ 
+---
+ 
+## 5V BEC (Servo Power)
+ 
+>>>>>>> origin/Meshtastic-Programs
 | BEC Terminal | Connects To                        |
 |--------------|------------------------------------|
 | +5V output   | All 4 servo red (VCC) wires        |
 | GND output   | Common ground rail (ESP32 + servos)|
 | Input +      | Battery / main power bus           |
 | Input −      | Battery negative                   |
+<<<<<<< HEAD
 
 > Minimum BEC rating: 5A continuous. 8–10A recommended for headroom.
 
@@ -118,11 +197,21 @@ GPS V3 ────────────────────────�
 
 ## Raspberry Pi 5 ↔ ESP32
 
+=======
+ 
+> Minimum BEC rating: 5A continuous. 8–10A recommended for headroom.
+ 
+---
+ 
+## Raspberry Pi 5 ↔ ESP32
+ 
+>>>>>>> origin/Meshtastic-Programs
 | Pi 5 Pin      | ESP32 Pin | Notes                          |
 |---------------|-----------|--------------------------------|
 | GPIO 14 (TX)  | GPIO 4    | Pi sends commands → ESP32      |
 | GPIO 15 (RX)  | GPIO 2    | ESP32 sends sensor data → Pi   |
 | GND           | GND       | Common ground                  |
+<<<<<<< HEAD
 
 > Both Pi 5 and ESP32 use 3.3V logic — direct connection is safe, no level shifter needed.  
 > Baud rate: 115200.
@@ -131,6 +220,16 @@ GPS V3 ────────────────────────�
 
 ## Power Summary
 
+=======
+ 
+> Both Pi 5 and ESP32 use 3.3V logic — direct connection is safe, no level shifter needed.  
+> Baud rate: 115200.
+ 
+---
+ 
+## Power Summary
+ 
+>>>>>>> origin/Meshtastic-Programs
 | Component     | Voltage | Source              |
 |---------------|---------|---------------------|
 | ESP32         | 5V      | USB or regulator    |
@@ -139,6 +238,7 @@ GPS V3 ────────────────────────�
 | BMP585        | 3.3V    | ESP32 3.3V pin      |
 | MPU6050       | 3.3V    | ESP32 3.3V pin      |
 | 4× Servos     | 5V      | Dedicated 5V BEC    |
+<<<<<<< HEAD
 
 ---
 
@@ -156,6 +256,25 @@ GPS V3 ────────────────────────�
 
 ## Notes
 
+=======
+ 
+---
+ 
+## I2C Address Reference
+ 
+| Device  | I2C Address | AD0/SDO Pin |
+|---------|-------------|-------------|
+| BMP585  | 0x47        | Default     |
+| MPU6050 | 0x68        | AD0 → GND   |
+ 
+> Both devices share GPIO 21 (SDA) and GPIO 22 (SCL).  
+> Addresses are unique so no conflicts on the shared bus.
+ 
+---
+ 
+## Notes
+ 
+>>>>>>> origin/Meshtastic-Programs
 - All grounds must be tied together: ESP32 GND, BEC GND, Pi 5 GND, and all servo browns.
 - Keep servo signal wires away from power wires to reduce noise on PWM lines.
 - The GPS needs clear sky view — route the antenna cable to the exterior of the airframe.
