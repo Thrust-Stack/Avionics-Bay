@@ -34,8 +34,8 @@ GPS V3 ────────────────────────�
 | 22   | I2C SCL        | BMP585 SCL + MPU6050 SCL  | Orange     |
 | 13   | PWM (Servo 1)  | Servo 1 signal            | White      |
 | 14   | PWM (Servo 2)  | Servo 2 signal            | White      |
-| 25   | PWM (Servo 3)  | Servo 3 signal            | White      |
-| 26   | PWM (Servo 4)  | Servo 4 signal            | White      |
+| 25   | PWM (Servo 4)  | Servo 3 signal            | White      |
+| 26   | PWM (Servo 3)  | Servo 4 signal            | White      |
 | 4    | UART1 RX       | Pi 5 GPIO 14 (TX)         | Purple     |
 | 2    | UART1 TX       | Pi 5 GPIO 15 (RX)         | Purple     |
 | 3.3V | Power out      | GPS VIN, BMP585 VIN, MPU VCC | Red     |
@@ -95,8 +95,8 @@ GPS V3 ────────────────────────�
 |---------|------------|----------------|
 | Servo 1 | GPIO 13    | Fin 1 / TVC X+ |
 | Servo 2 | GPIO 14    | Fin 2 / TVC X- |
-| Servo 3 | GPIO 25    | Fin 3 / TVC Y+ |
-| Servo 4 | GPIO 26    | Fin 4 / TVC Y- |
+| Servo 3 | GPIO 26   | Fin 3 / TVC Y+ |
+| Servo 4 | GPIO 25   | Fin 4 / TVC Y- |
 
 > PWM: 250Hz, pulse range 1000–2000μs, neutral 1520μs.  
 > ⚠️ Never power servos from ESP32 — use a dedicated BEC.

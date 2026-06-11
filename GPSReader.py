@@ -9,12 +9,19 @@ Setup:
   2. pip install pyserial pynmea2
   3. Update COM_PORT below
   4. python GPSReader.py
+
+Each session is saved to logs/flight_YYYYMMDD_HHMMSS.db
+Run  python export_to_excel.py  after a session to convert to .xlsx
 """
 
 import serial
 import serial.tools.list_ports
+import sqlite3
+import datetime
+import os
 import time
 import sys
+import threading
 
 try:
     import pynmea2
@@ -22,6 +29,8 @@ except ImportError:
     print("Missing pynmea2 library. Install it:")
     print("  pip install pynmea2")
     sys.exit(1)
+
+from export_to_excel import export as export_xlsx
 
 # ============================================================
 # CONFIGURATION
@@ -31,7 +40,13 @@ BAUD_RATE = 115200
 
 # USB-serial chip descriptions used by common ESP32 dev boards
 ESP32_KEYWORDS = ["cp210", "ch340", "ch341", "esp32", "uart", "usb serial", "usb-serial"]
+
+# How often to auto-export the .xlsx while a session is running (seconds)
+XLSX_EXPORT_INTERVAL = 30
 # ============================================================
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGS_DIR = os.path.join(SCRIPT_DIR, "logs")
 
 
 def find_esp32_port():
@@ -71,6 +86,50 @@ def degrees_to_compass(degrees):
         return "NW"
 
 
+def init_db(path):
+    """Create the SQLite database and tables for this session."""
+    conn = sqlite3.connect(path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS gps (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp   TEXT    NOT NULL,
+            lat         REAL    NOT NULL,
+            lat_dir     TEXT    NOT NULL,
+            lon         REAL    NOT NULL,
+            lon_dir     TEXT    NOT NULL,
+            alt_msl     REAL,
+            speed_mph   REAL,
+            heading_deg REAL,
+            heading_dir TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS imu (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp   TEXT NOT NULL,
+            accel_x     REAL NOT NULL,
+            accel_y     REAL NOT NULL,
+            accel_z     REAL NOT NULL,
+            gyro_x      REAL NOT NULL,
+            gyro_y      REAL NOT NULL,
+            gyro_z      REAL NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS alt (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp   TEXT NOT NULL,
+            agl_m       REAL NOT NULL
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def now():
+    return datetime.datetime.now().isoformat(sep=" ", timespec="milliseconds")
+
+
 def parse_bmp(line):
     """Parse custom $ALT sentence: $ALT,<agl_metres>"""
     try:
@@ -83,23 +142,12 @@ def parse_bmp(line):
 
 
 def parse_imu(line):
-    """Parse custom $IMU sentence from ESP32."""
+    """Parse custom $IMU sentence. Returns (ax, ay, az, gx, gy, gz) or None."""
     try:
         parts = line.strip().split(",")
         if len(parts) != 7 or parts[0] != "$IMU":
             return None
-
-        ax = float(parts[1])
-        ay = float(parts[2])
-        az = float(parts[3])
-        gx = float(parts[4])
-        gy = float(parts[5])
-        gz = float(parts[6])
-
-        return (
-            f"[IMU] Accel: X={ax:.2f} Y={ay:.2f} Z={az:.2f} m/s2  "
-            f"Gyro: X={gx:.2f} Y={gy:.2f} Z={gz:.2f} deg/s"
-        )
+        return tuple(float(p) for p in parts[1:])
     except (ValueError, IndexError):
         return None
 
@@ -111,11 +159,11 @@ def parse_gps(line):
     except (pynmea2.ParseError, ValueError):
         return None, None
 
-    # GGA - grab MSL altitude
+    # GGA - grab MSL altitude as raw float
     if isinstance(msg, pynmea2.types.talker.GGA):
         try:
             if int(msg.gps_qual) > 0:
-                return "alt", f"{float(msg.altitude):.1f}m"
+                return "alt", float(msg.altitude)
         except (ValueError, AttributeError, TypeError):
             pass
         return "alt", None
@@ -126,22 +174,36 @@ def parse_gps(line):
             return "no_fix", None
 
         try:
-            lat = f"{msg.latitude:.6f}°{msg.lat_dir}"
-            lon = f"{msg.longitude:.6f}°{msg.lon_dir}"
-            speed_mph = msg.spd_over_grnd * 1.15078 if msg.spd_over_grnd else 0
-            course = msg.true_course
+            speed_mph = float(msg.spd_over_grnd) * 1.15078 if msg.spd_over_grnd else 0.0
+            course = float(msg.true_course) if msg.true_course else None
         except (ValueError, AttributeError):
             return None, None
 
-        if course is not None and course != "":
-            compass = degrees_to_compass(course)
-            heading = f"{float(course):.1f}° {compass}"
-        else:
-            heading = "---"
-
-        return "gps", (lat, lon, speed_mph, heading)
+        compass = degrees_to_compass(course) if course is not None else "---"
+        return "gps", (msg.latitude, msg.lat_dir, msg.longitude, msg.lon_dir,
+                        speed_mph, course, compass)
 
     return None, None
+
+
+def xlsx_exporter(db_path, stop_event):
+    """Background thread: re-exports .xlsx every XLSX_EXPORT_INTERVAL seconds."""
+    while not stop_event.wait(XLSX_EXPORT_INTERVAL):
+        result = export_xlsx(db_path)
+        if result:
+            print(f"[LOG] .xlsx updated: {os.path.basename(result)}")
+        else:
+            print("[LOG] .xlsx skipped (file open in another program)")
+
+
+def log_imu(conn, vals):
+    ax, ay, az, gx, gy, gz = vals
+    conn.execute(
+        "INSERT INTO imu (timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (now(), ax, ay, az, gx, gy, gz)
+    )
+    conn.commit()
 
 
 def main():
@@ -150,12 +212,23 @@ def main():
         print("ERROR: No ESP32 port found. Plug in the ESP32 or set COM_PORT manually.")
         sys.exit(1)
 
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    session_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    db_path = os.path.join(LOGS_DIR, f"flight_{session_ts}.db")
+    conn = init_db(db_path)
+
     print("==========================================")
     print("  Avionics Telemetry")
     print("==========================================")
-    print(f"  Port: {port}")
+    print(f"  Port:    {port}")
+    print(f"  Log:     {db_path}")
     print("  Press Ctrl+C to stop")
     print("==========================================\n")
+
+    # Start background thread that refreshes the .xlsx every XLSX_EXPORT_INTERVAL seconds
+    stop_event = threading.Event()
+    exporter = threading.Thread(target=xlsx_exporter, args=(db_path, stop_event), daemon=True)
+    exporter.start()
 
     try:
         ser = serial.Serial(port, BAUD_RATE, timeout=1)
@@ -168,8 +241,8 @@ def main():
     ser.reset_input_buffer()
 
     gps_fix = False
-    latest_alt = "---"
-    latest_bmp_alt = "---"
+    latest_alt_msl = None   # raw float, updated from GGA
+    latest_alt_str = "---"  # display string
     gps_count = 0
     imu_count = 0
     alt_count = 0
@@ -186,16 +259,25 @@ def main():
                 agl = parse_bmp(line)
                 if agl is not None:
                     alt_count += 1
-                    latest_bmp_alt = f"{agl:.1f}m"
-                    print(f"[ALT] Altitude: {latest_bmp_alt}")
+                    print(f"[ALT] Altitude: {agl:.1f}m")
+                    conn.execute(
+                        "INSERT INTO alt (timestamp, agl_m) VALUES (?, ?)",
+                        (now(), agl)
+                    )
+                    conn.commit()
                 continue
 
             # IMU data
             if line.startswith("$IMU"):
-                parsed = parse_imu(line)
-                if parsed:
+                vals = parse_imu(line)
+                if vals:
+                    ax, ay, az, gx, gy, gz = vals
                     imu_count += 1
-                    print(parsed)
+                    print(
+                        f"[IMU] Accel: X={ax:.2f} Y={ay:.2f} Z={az:.2f} m/s2  "
+                        f"Gyro: X={gx:.2f} Y={gy:.2f} Z={gz:.2f} deg/s"
+                    )
+                    log_imu(conn, vals)
                 continue
 
             # GPS NMEA data (may contain embedded $IMU if ESP32 concatenates lines)
@@ -203,35 +285,49 @@ def main():
                 tokens = ["$" + seg for seg in line.split("$") if seg]
                 for token in tokens:
                     if token.startswith("$IMU"):
-                        parsed = parse_imu(token)
-                        if parsed:
+                        vals = parse_imu(token)
+                        if vals:
+                            ax, ay, az, gx, gy, gz = vals
                             imu_count += 1
-                            print(parsed)
+                            print(
+                                f"[IMU] Accel: X={ax:.2f} Y={ay:.2f} Z={az:.2f} m/s2  "
+                                f"Gyro: X={gx:.2f} Y={gy:.2f} Z={gz:.2f} deg/s"
+                            )
+                            log_imu(conn, vals)
                         continue
 
                     msg_type, data = parse_gps(token)
 
                     if msg_type == "alt":
-                        if data:
-                            latest_alt = data
+                        if data is not None:
+                            latest_alt_msl = data
+                            latest_alt_str = f"{data:.1f}m"
 
                     elif msg_type == "no_fix":
                         if not gps_fix:
                             print("[GPS] Searching for satellites...")
 
                     elif msg_type == "gps":
-                        lat, lon, speed, heading = data
+                        lat, lat_dir, lon, lon_dir, speed, course, compass = data
 
                         if not gps_fix:
                             gps_fix = True
                             print("\n  GPS FIX ACQUIRED!\n")
 
+                        heading_str = f"{course:.1f}° {compass}" if course is not None else "---"
                         gps_count += 1
                         print(
-                            f"[GPS] Lat: {lat}  Lon: {lon}  "
-                            f"ALT: {latest_alt}  "
-                            f"Speed: {speed:.1f} mph  Heading: {heading}"
+                            f"[GPS] Lat: {lat:.6f}°{lat_dir}  Lon: {lon:.6f}°{lon_dir}  "
+                            f"ALT: {latest_alt_str}  "
+                            f"Speed: {speed:.1f} mph  Heading: {heading_str}"
                         )
+                        conn.execute(
+                            "INSERT INTO gps "
+                            "(timestamp, lat, lat_dir, lon, lon_dir, alt_msl, speed_mph, heading_deg, heading_dir) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (now(), lat, lat_dir, lon, lon_dir, latest_alt_msl, speed, course, compass)
+                        )
+                        conn.commit()
 
                 continue
 
@@ -240,7 +336,16 @@ def main():
                 print(f"[ESP32] {line}")
 
     except KeyboardInterrupt:
-        print(f"\n\nStopped. GPS: {gps_count}  IMU: {imu_count}  ALT: {alt_count}")
+        stop_event.set()
+        print(f"\n\nStopped.  GPS: {gps_count}  IMU: {imu_count}  ALT: {alt_count}")
+        print(f"Session saved to: {db_path}")
+        print("Exporting final .xlsx...")
+        result = export_xlsx(db_path)
+        if result:
+            print(f"Exported: {result}")
+        else:
+            print("Could not write .xlsx (file open in another program). Run export_to_excel.py manually.")
+        conn.close()
         ser.close()
 
 
