@@ -11,8 +11,6 @@ def on_receive(packet, interface):
     if text:
         sender = packet.get("fromId", "unknown")
         print(f"Received from {sender}: {text}", flush=True)
-    else:
-        print("Received non-text packet:", packet, flush=True)
 
 interface = meshtastic.serial_interface.SerialInterface(devPath=PORT)
 
