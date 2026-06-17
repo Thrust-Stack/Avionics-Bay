@@ -1,0 +1,9 @@
+node_modules/
+dist/
+Website/
+.env
+__pycache__/
+*.pyc
+logs/
+*.db
+*.xlsx
