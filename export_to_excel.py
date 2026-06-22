@@ -11,7 +11,6 @@ Requires:  pip install openpyxl
 import sqlite3
 import sys
 import os
-import glob
 
 try:
     import openpyxl
@@ -103,11 +102,7 @@ def main():
     if len(sys.argv) > 1:
         db_path = sys.argv[1]
     else:
-        files = sorted(glob.glob(os.path.join(LOGS_DIR, "flight_*.db")))
-        if not files:
-            print("No flight logs found in logs/. Run GPSReader.py first.")
-            sys.exit(1)
-        db_path = files[-1]
+        db_path = os.path.join(LOGS_DIR, "flight_log.db")
 
     if not os.path.exists(db_path):
         print(f"File not found: {db_path}")
