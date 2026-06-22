@@ -213,8 +213,7 @@ def main():
         sys.exit(1)
 
     os.makedirs(LOGS_DIR, exist_ok=True)
-    session_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    db_path = os.path.join(LOGS_DIR, f"flight_{session_ts}.db")
+    db_path = os.path.join(LOGS_DIR, "flight_log.db")
     conn = init_db(db_path)
 
     print("==========================================")
