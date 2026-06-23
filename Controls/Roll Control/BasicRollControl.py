@@ -1,112 +1,126 @@
 import argparse
+import copy
 import csv
-import glob
 import math
-import os
-import sqlite3
+import socket
+import threading
 import time
 from dataclasses import dataclass
-
-import serial
 
 # -----------------------------
 # Configuration
 # -----------------------------
 
-TARGET_ROLL_RATE = 0.0        # deg/s
-KP = 0.02                     # proportional gain
+TARGET_ROLL_RATE = 0.0       # deg/s
+KP = 0.0025                  # proportional gain
 MAX_FIN_DEFLECTION = 7.5     # degrees
 
-SERIAL_PORT = "COM3"          # command link to ESP32; change for your machine
-BAUD_RATE = 115200
+# Must match TELEMETRY_UDP_PORT in GPSReader.py
+TELEMETRY_UDP_PORT = 5761
 
-# GPSReader.py stores sessions in repo_root/logs/flight_YYYYMMDD_HHMMSS.db.
-TELEMETRY_DB_PATH = None      # set to a specific .db path, or leave None for latest
+# Must match COMMAND_HOST / COMMAND_UDP_PORT in GPSReader.py
+COMMAND_HOST = "127.0.0.1"
+COMMAND_PORT = 5760
 
-# The ESP32 bridge prints Adafruit MPU gyro values. Those are radians/second.
+# The ESP32 bridge (Adafruit MPU6050) outputs gyro in radians/second.
 GYRO_INPUT_UNITS = "rad/s"
 
 # -----------------------------
-# Safety Parameters
+# Safety parameters
 # -----------------------------
 
-MIN_CONTROL_ALTITUDE_M = 20.0
-
-MAX_X_ROTATION_DEG = 90.0
-MAX_Y_ROTATION_DEG = 90.0
+MIN_CONTROL_ALTITUDE_M = 0.0
+MAX_X_ROTATION_DEG     = 90.0
+MAX_Y_ROTATION_DEG     = 90.0
+STALE_TIMEOUT_S        = 0.5   # seconds without IMU data → stale
 
 SERVO_NEUTRAL_COMMAND = 0.0
 
 # -----------------------------
-# Data models
+# Data model
 # -----------------------------
 
 
 @dataclass
 class TelemetrySnapshot:
-    timestamp: str | None = None
     altitude_m: float | None = None
-    accel_x: float | None = None
-    accel_y: float | None = None
-    accel_z: float | None = None
-    gyro_x: float | None = None
-    gyro_y: float | None = None
-    gyro_z: float | None = None
-    lat: float | None = None
-    lon: float | None = None
-    speed_mph: float | None = None
-    heading_deg: float | None = None
+    accel_x:    float | None = None
+    accel_y:    float | None = None
+    accel_z:    float | None = None
+    gyro_x:     float | None = None
+    gyro_y:     float | None = None
+    gyro_z:     float | None = None
 
 
-class GPSReaderTelemetry:
-    """Reads the newest telemetry rows written by GPSReader.py."""
+# -----------------------------
+# Live telemetry receiver
+# -----------------------------
 
-    def __init__(self, db_path=None):
-        self.db_path = db_path or find_latest_telemetry_db()
-        if not self.db_path:
-            raise FileNotFoundError(
-                "No GPSReader database found in logs/. Run GPSReader.py first "
-                "or pass --db path\\to\\flight.db."
-            )
 
-        self.conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
-        self.conn.row_factory = sqlite3.Row
+class LiveTelemetry:
+    """
+    Background thread receives $IMU and $ALT packets broadcast by GPSReader.py.
+    Main loop calls latest() for the freshest combined snapshot and is_fresh()
+    to detect if the data has gone stale.
+    """
 
-    def close(self):
-        self.conn.close()
+    def __init__(self, port=TELEMETRY_UDP_PORT, gyro_units=GYRO_INPUT_UNITS):
+        self.gyro_units = gyro_units
+        self._snapshot = TelemetrySnapshot()
+        self._lock = threading.Lock()
+        self._last_imu_time = 0.0
+
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.bind(("127.0.0.1", port))
+        self._sock.settimeout(0.1)
+
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                data, _ = self._sock.recvfrom(256)
+            except socket.timeout:
+                continue
+
+            line = data.decode("ascii", errors="replace").strip()
+
+            if line.startswith("$IMU,"):
+                parts = line.split(",")
+                if len(parts) == 7:
+                    try:
+                        with self._lock:
+                            self._snapshot.accel_x = float(parts[1])
+                            self._snapshot.accel_y = float(parts[2])
+                            self._snapshot.accel_z = float(parts[3])
+                            self._snapshot.gyro_x = normalize_gyro(float(parts[4]), self.gyro_units)
+                            self._snapshot.gyro_y = normalize_gyro(float(parts[5]), self.gyro_units)
+                            self._snapshot.gyro_z = normalize_gyro(float(parts[6]), self.gyro_units)
+                            self._last_imu_time = time.monotonic()
+                    except (ValueError, IndexError):
+                        pass
+
+            elif line.startswith("$ALT,"):
+                parts = line.split(",")
+                if len(parts) == 2:
+                    try:
+                        with self._lock:
+                            self._snapshot.altitude_m = float(parts[1])
+                    except (ValueError, IndexError):
+                        pass
 
     def latest(self):
-        snapshot = TelemetrySnapshot()
+        with self._lock:
+            return copy.copy(self._snapshot)
 
-        imu = self._latest_row("imu")
-        if imu:
-            snapshot.timestamp = imu["timestamp"]
-            snapshot.accel_x = imu["accel_x"]
-            snapshot.accel_y = imu["accel_y"]
-            snapshot.accel_z = imu["accel_z"]
-            snapshot.gyro_x = normalize_gyro(imu["gyro_x"])
-            snapshot.gyro_y = normalize_gyro(imu["gyro_y"])
-            snapshot.gyro_z = normalize_gyro(imu["gyro_z"])
+    def is_fresh(self):
+        return (time.monotonic() - self._last_imu_time) < STALE_TIMEOUT_S
 
-        alt = self._latest_row("alt")
-        if alt:
-            snapshot.altitude_m = alt["agl_m"]
-            snapshot.timestamp = newest_timestamp(snapshot.timestamp, alt["timestamp"])
-
-        gps = self._latest_row("gps")
-        if gps:
-            snapshot.lat = signed_coordinate(gps["lat"], gps["lat_dir"])
-            snapshot.lon = signed_coordinate(gps["lon"], gps["lon_dir"])
-            snapshot.speed_mph = gps["speed_mph"]
-            snapshot.heading_deg = gps["heading_deg"]
-            snapshot.timestamp = newest_timestamp(snapshot.timestamp, gps["timestamp"])
-
-        return snapshot
-
-    def _latest_row(self, table):
-        return self.conn.execute(
-            f"SELECT * FROM {table} ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+    def close(self):
+        self._stop.set()
+        self._sock.close()
 
 
 # -----------------------------
@@ -114,36 +128,8 @@ class GPSReaderTelemetry:
 # -----------------------------
 
 
-def repo_root():
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-
-
-def find_latest_telemetry_db():
-    logs_dir = os.path.join(repo_root(), "logs")
-    db_files = glob.glob(os.path.join(logs_dir, "flight_*.db"))
-    if not db_files:
-        return None
-    return max(db_files, key=os.path.getmtime)
-
-
-def newest_timestamp(current, candidate):
-    if current is None:
-        return candidate
-    if candidate is None:
-        return current
-    return max(current, candidate)
-
-
-def signed_coordinate(value, direction):
-    if value is None:
-        return None
-    if direction in ("S", "W"):
-        return -value
-    return value
-
-
-def normalize_gyro(value):
-    if GYRO_INPUT_UNITS == "rad/s":
+def normalize_gyro(value, units):
+    if units == "rad/s":
         return math.degrees(value)
     return value
 
@@ -153,12 +139,6 @@ def clamp(value, lower, upper):
 
 
 def estimate_rotation_x_y(snapshot):
-    """
-    Estimate tilt from accelerometer data.
-
-    This is usable for ground testing and slow motion. During powered flight,
-    acceleration can make accelerometer-only attitude estimates inaccurate.
-    """
     if None in (snapshot.accel_x, snapshot.accel_y, snapshot.accel_z):
         return 0.0, 0.0
 
@@ -173,45 +153,33 @@ def estimate_rotation_x_y(snapshot):
 
 
 def control_is_allowed(altitude_m, rotation_x_deg, rotation_y_deg):
-    """
-    Roll control is only allowed if:
-    - altitude is above 20 meters
-    - x rotation is within +/- 90 degrees
-    - y rotation is within +/- 90 degrees
-    """
-    if altitude_m is None:
-        return False
-
-    altitude_ok = altitude_m > MIN_CONTROL_ALTITUDE_M
-    x_rotation_ok = abs(rotation_x_deg) < MAX_X_ROTATION_DEG
-    y_rotation_ok = abs(rotation_y_deg) < MAX_Y_ROTATION_DEG
-
-    return altitude_ok and x_rotation_ok and y_rotation_ok
+    effective_alt = altitude_m if altitude_m is not None else 0.0
+    return (
+        effective_alt >= MIN_CONTROL_ALTITUDE_M
+        and abs(rotation_x_deg) < MAX_X_ROTATION_DEG
+        and abs(rotation_y_deg) < MAX_Y_ROTATION_DEG
+    )
 
 
 def calculate_fin_command(roll_rate):
     error = TARGET_ROLL_RATE - roll_rate
-    command = KP * error
-    command = clamp(command, -MAX_FIN_DEFLECTION, MAX_FIN_DEFLECTION)
-
-    return command
+    return clamp(KP * error, -MAX_FIN_DEFLECTION, MAX_FIN_DEFLECTION)
 
 
 def send_command_to_esp32(esp32, fin_command):
     message = f"ROLL,{fin_command:.2f}\n"
-    esp32.write(message.encode("utf-8"))
+    esp32.sendto(message.encode("utf-8"), (COMMAND_HOST, COMMAND_PORT))
 
 
-def open_command_link(port):
-    if port is None:
+def open_command_link(enabled):
+    if not enabled:
         return None
-    return serial.Serial(port, BAUD_RATE, timeout=0.1)
+    return socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 
 def write_log_header(logger):
     logger.writerow([
         "time",
-        "telemetry_timestamp",
         "state",
         "altitude_m",
         "rotation_x_deg",
@@ -220,33 +188,30 @@ def write_log_header(logger):
         "gyro_y_deg_s",
         "gyro_z_deg_s",
         "roll_rate_deg_s",
-        "lat",
-        "lon",
-        "speed_mph",
-        "heading_deg",
         "control_allowed",
-        "fin_command"
+        "fin_command",
     ])
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Roll controller using telemetry written by GPSReader.py."
+        description="Roll controller — requires GPSReader.py to be running first."
     )
     parser.add_argument(
-        "--db",
-        default=TELEMETRY_DB_PATH,
-        help="Path to a GPSReader flight_*.db file. Defaults to latest in logs/."
-    )
-    parser.add_argument(
-        "--port",
-        default=SERIAL_PORT,
-        help="Serial port used to send fin commands to the ESP32. Use 'none' to disable."
+        "--no-commands",
+        action="store_true",
+        help="Log only — do not send ROLL commands or move servos.",
     )
     parser.add_argument(
         "--log",
         default="flight_log.csv",
-        help="CSV path for roll-control log output."
+        help="CSV path for roll-control log output.",
+    )
+    parser.add_argument(
+        "--gyro-units",
+        choices=("deg/s", "rad/s"),
+        default=GYRO_INPUT_UNITS,
+        help="Gyro units the ESP32 bridge outputs.",
     )
     return parser.parse_args()
 
@@ -258,9 +223,23 @@ def parse_args():
 
 def main():
     args = parse_args()
-    command_port = None if str(args.port).lower() == "none" else args.port
-    telemetry = GPSReaderTelemetry(args.db)
-    esp32 = open_command_link(command_port)
+    telemetry = LiveTelemetry(gyro_units=args.gyro_units)
+    esp32 = open_command_link(not args.no_commands)
+
+    print("Roll controller running.")
+    print("Requires GPSReader.py to be running first.")
+    print(f"Telemetry : UDP localhost:{TELEMETRY_UDP_PORT}")
+    print(f"Commands  : {'UDP -> ' + COMMAND_HOST + ':' + str(COMMAND_PORT) if esp32 else 'disabled (--no-commands)'}")
+    print("Press Ctrl+C to stop.\n")
+
+    # Zero the canards before the control loop starts
+    if esp32:
+        send_command_to_esp32(esp32, SERVO_NEUTRAL_COMMAND)
+        print("Canards zeroed (neutral). Starting control loop in 5 seconds...")
+        for i in range(5, 0, -1):
+            print(f"  {i}...", flush=True)
+            time.sleep(1.0)
+        print("GO\n")
 
     with open(args.log, "w", newline="") as log_file:
         logger = csv.writer(log_file)
@@ -271,35 +250,34 @@ def main():
                 now = time.time()
                 snapshot = telemetry.latest()
 
-                rotation_x_deg, rotation_y_deg = estimate_rotation_x_y(snapshot)
+                if not telemetry.is_fresh():
+                    state = "STALE_TELEMETRY"
+                    fin_command = SERVO_NEUTRAL_COMMAND
+                    rotation_x_deg = rotation_y_deg = 0.0
+                    gyro_x = gyro_y = gyro_z = roll_rate = 0.0
+                    allowed = False
+                else:
+                    rotation_x_deg, rotation_y_deg = estimate_rotation_x_y(snapshot)
+                    gyro_x    = snapshot.gyro_x or 0.0
+                    gyro_y    = snapshot.gyro_y or 0.0
+                    gyro_z    = snapshot.gyro_z or 0.0
+                    roll_rate = gyro_z
 
-                gyro_x = snapshot.gyro_x or 0.0
-                gyro_y = snapshot.gyro_y or 0.0
-                gyro_z = snapshot.gyro_z or 0.0
-
-                # Choose the gyro axis that matches the rocket's roll axis.
-                # The current ESP32 bridge wiring assumes gyro_z is roll rate.
-                roll_rate = gyro_z
-
-                allowed = control_is_allowed(
-                    snapshot.altitude_m,
-                    rotation_x_deg,
-                    rotation_y_deg
-                )
-
-                state = "CONTROL_ACTIVE" if allowed else "IDLE"
-                fin_command = (
-                    calculate_fin_command(roll_rate)
-                    if state == "CONTROL_ACTIVE"
-                    else SERVO_NEUTRAL_COMMAND
-                )
+                    allowed = control_is_allowed(
+                        snapshot.altitude_m, rotation_x_deg, rotation_y_deg
+                    )
+                    state = "CONTROL_ACTIVE" if allowed else "IDLE"
+                    fin_command = (
+                        calculate_fin_command(roll_rate)
+                        if allowed
+                        else SERVO_NEUTRAL_COMMAND
+                    )
 
                 if esp32:
                     send_command_to_esp32(esp32, fin_command)
 
                 logger.writerow([
                     now,
-                    snapshot.timestamp,
                     state,
                     snapshot.altitude_m,
                     rotation_x_deg,
@@ -308,21 +286,24 @@ def main():
                     gyro_y,
                     gyro_z,
                     roll_rate,
-                    snapshot.lat,
-                    snapshot.lon,
-                    snapshot.speed_mph,
-                    snapshot.heading_deg,
                     allowed,
-                    fin_command
+                    fin_command,
                 ])
-
                 log_file.flush()
+
+                print(
+                    f"{state:<16}  alt={str(snapshot.altitude_m or '---'):>7}m  "
+                    f"roll={roll_rate:7.2f} deg/s  cmd={fin_command:6.2f}",
+                    end="\r",
+                    flush=True,
+                )
 
                 time.sleep(0.01)  # 100 Hz loop
 
         except KeyboardInterrupt:
             if esp32:
                 send_command_to_esp32(esp32, SERVO_NEUTRAL_COMMAND)
+            print("\nStopped. Neutral command sent.")
         finally:
             telemetry.close()
             if esp32:
