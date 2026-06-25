@@ -30,10 +30,10 @@ GPS V3 ────────────────────────�
 | GPIO 17   | UART2 TX      | GPS RX                           | Blue       |
 | GPIO 21   | I2C SDA       | BMP585 SDA + MPU6050 SDA         | Yellow     |
 | GPIO 22   | I2C SCL       | BMP585 SCL + MPU6050 SCL         | Orange     |
-| GPIO 13   | PWM           | Servo 1 signal                   | White      |
-| GPIO 14   | PWM           | Servo 2 signal                   | White      |
-| GPIO 25   | PWM           | Servo 3 signal                   | White      |
-| GPIO 26   | PWM           | Servo 4 signal                   | White      |
+| NA        | PWM           | Servo 1 signal                   | White      |
+| NA        | PWM           | Servo 2 signal                   | White      |
+| NA        | PWM           | Servo 3 signal                   | White      |
+| NA        | PWM           | Servo 4 signal                   | White      |
 | GPIO 4    | UART1 RX      | Pi 5 GPIO 14 TX                  | Purple     |
 | GPIO 2    | UART1 TX      | Pi 5 GPIO 15 RX                  | Purple     |
 | 3.3V      | Power output  | GPS VIN, BMP585 VIN, MPU6050 VCC | Red        |
