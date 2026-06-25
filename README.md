@@ -101,15 +101,6 @@ GPS V3 ────────────────────────�
 | Brown GND  | Common ground | Shared with ESP32 and BEC ground      |
 | Orange SIG | ESP32 PWM pin | PWM signal at 250 Hz                  |
 
-### Servo Signal Pins
-
-| Servo   | PCA9685 Channel  | Notes          |
-| ------- | ---------------- | -------------- |
-| Servo 1 | CH 12            | Fin 1 / TVC X+ |
-| Servo 2 | CH 13            | Fin 2 / TVC X- |
-| Servo 3 | CH 14            | Fin 3 / TVC Y+ |
-| Servo 4 | CH 15            | Fin 4 / TVC Y- |
-
 ### PWM Settings
 
 * Frequency: 250 Hz
