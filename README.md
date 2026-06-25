@@ -172,6 +172,79 @@ GPS V3 ────────────────────────�
 | BMP585  | `0x47` default / `0x46` if SDO is tied to GND | SDO                |
 | MPU6050 | `0x68`                                        | AD0 tied to GND    |
 
+---
+
+## PCA9685 Servo Driver Wiring
+
+The PCA9685 is used to control the PWM signals for the servos. The ESP32 communicates with the PCA9685 over I2C, while the servos are powered by a separate 7.4V 2S LiPo battery.
+
+---
+
+## ESP32 to PCA9685 Connections
+
+| ESP32 Pin | PCA9685 Pin | Purpose |
+|---|---|---|
+| 3V3 | VCC | Logic power for PCA9685 |
+| GND | GND | Common ground |
+| GPIO 21 | SDA | I2C data |
+| GPIO 22 | SCL | I2C clock |
+| GND | OE | Optional output enable |
+
+> OE can be left disconnected on most PCA9685 boards, but connecting OE to GND keeps the PWM outputs enabled.
+
+---
+
+## Servo Battery to PCA9685 Connections
+
+| Servo Battery | PCA9685 Pin | Purpose |
+|---|---|---|
+| 7.4V LiPo + | V+ | Servo power rail |
+| 7.4V LiPo - | GND | Servo power ground |
+
+The 2S LiPo battery is 7.4V nominal and 8.4V fully charged. Make sure the PCA9685 board and servos are rated for 8.4V max before connecting the battery.
+
+---
+
+## Servo Connections
+
+Each servo connects to one PCA9685 channel.
+
+| Servo | PCA9685 Channel |
+|---|---|
+| Servo 1 | Channel 0 |
+| Servo 2 | Channel 1 |
+| Servo 3 | Channel 2 |
+| Servo 4 | Channel 3 |
+
+Each servo has three wires:
+
+| Servo Wire | PCA9685 Connection |
+|---|---|
+| Signal | PWM pin |
+| Power | V+ pin |
+| Ground | GND pin |
+
+---
+
+## Wiring Diagram
+
+```text
+ESP32 3V3 ───────────────→ PCA9685 VCC
+ESP32 GND ───────────────→ PCA9685 GND
+ESP32 GPIO21 SDA ────────→ PCA9685 SDA
+ESP32 GPIO22 SCL ────────→ PCA9685 SCL
+ESP32 GND ───────────────→ PCA9685 OE  optional
+
+Servo Battery + 7.4V ────→ PCA9685 V+
+Servo Battery - ─────────→ PCA9685 GND
+
+PCA9685 Channel 0 ───────→ Servo 1
+PCA9685 Channel 1 ───────→ Servo 2
+PCA9685 Channel 2 ───────→ Servo 3
+PCA9685 Channel 3 ───────→ Servo 4
+
+---
+
 Both sensors share the same I2C bus:
 
 * SDA: GPIO 21
