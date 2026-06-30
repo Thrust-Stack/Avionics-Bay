@@ -1,5 +1,4 @@
 import argparse
-import csv
 import glob
 import math
 import os
@@ -208,27 +207,6 @@ def open_command_link(port):
     return serial.Serial(port, BAUD_RATE, timeout=0.1)
 
 
-def write_log_header(logger):
-    logger.writerow([
-        "time",
-        "telemetry_timestamp",
-        "state",
-        "altitude_m",
-        "rotation_x_deg",
-        "rotation_y_deg",
-        "gyro_x_deg_s",
-        "gyro_y_deg_s",
-        "gyro_z_deg_s",
-        "roll_rate_deg_s",
-        "lat",
-        "lon",
-        "speed_mph",
-        "heading_deg",
-        "control_allowed",
-        "fin_command"
-    ])
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Roll controller using telemetry written by GPSReader.py."
@@ -242,11 +220,6 @@ def parse_args():
         "--port",
         default=SERIAL_PORT,
         help="Serial port used to send fin commands to the ESP32. Use 'none' to disable."
-    )
-    parser.add_argument(
-        "--log",
-        default="flight_log.csv",
-        help="CSV path for roll-control log output."
     )
     return parser.parse_args()
 
@@ -262,71 +235,41 @@ def main():
     telemetry = GPSReaderTelemetry(args.db)
     esp32 = open_command_link(command_port)
 
-    with open(args.log, "w", newline="") as log_file:
-        logger = csv.writer(log_file)
-        write_log_header(logger)
+    try:
+        while True:
+            snapshot = telemetry.latest()
 
-        try:
-            while True:
-                now = time.time()
-                snapshot = telemetry.latest()
+            rotation_x_deg, rotation_y_deg = estimate_rotation_x_y(snapshot)
 
-                rotation_x_deg, rotation_y_deg = estimate_rotation_x_y(snapshot)
+            # Choose the gyro axis that matches the rocket's roll axis.
+            # The current ESP32 bridge wiring assumes gyro_z is roll rate.
+            roll_rate = snapshot.gyro_z or 0.0
 
-                gyro_x = snapshot.gyro_x or 0.0
-                gyro_y = snapshot.gyro_y or 0.0
-                gyro_z = snapshot.gyro_z or 0.0
+            allowed = control_is_allowed(
+                snapshot.altitude_m,
+                rotation_x_deg,
+                rotation_y_deg
+            )
 
-                # Choose the gyro axis that matches the rocket's roll axis.
-                # The current ESP32 bridge wiring assumes gyro_z is roll rate.
-                roll_rate = gyro_z
+            state = "CONTROL_ACTIVE" if allowed else "IDLE"
+            fin_command = (
+                calculate_fin_command(roll_rate)
+                if state == "CONTROL_ACTIVE"
+                else SERVO_NEUTRAL_COMMAND
+            )
 
-                allowed = control_is_allowed(
-                    snapshot.altitude_m,
-                    rotation_x_deg,
-                    rotation_y_deg
-                )
-
-                state = "CONTROL_ACTIVE" if allowed else "IDLE"
-                fin_command = (
-                    calculate_fin_command(roll_rate)
-                    if state == "CONTROL_ACTIVE"
-                    else SERVO_NEUTRAL_COMMAND
-                )
-
-                if esp32:
-                    send_command_to_esp32(esp32, fin_command)
-
-                logger.writerow([
-                    now,
-                    snapshot.timestamp,
-                    state,
-                    snapshot.altitude_m,
-                    rotation_x_deg,
-                    rotation_y_deg,
-                    gyro_x,
-                    gyro_y,
-                    gyro_z,
-                    roll_rate,
-                    snapshot.lat,
-                    snapshot.lon,
-                    snapshot.speed_mph,
-                    snapshot.heading_deg,
-                    allowed,
-                    fin_command
-                ])
-
-                log_file.flush()
-
-                time.sleep(0.01)  # 100 Hz loop
-
-        except KeyboardInterrupt:
             if esp32:
-                send_command_to_esp32(esp32, SERVO_NEUTRAL_COMMAND)
-        finally:
-            telemetry.close()
-            if esp32:
-                esp32.close()
+                send_command_to_esp32(esp32, fin_command)
+
+            time.sleep(0.01)  # 100 Hz loop
+
+    except KeyboardInterrupt:
+        if esp32:
+            send_command_to_esp32(esp32, SERVO_NEUTRAL_COMMAND)
+    finally:
+        telemetry.close()
+        if esp32:
+            esp32.close()
 
 
 if __name__ == "__main__":

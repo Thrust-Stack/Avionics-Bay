@@ -1,5 +1,4 @@
 import argparse
-import csv
 import glob
 import math
 import os
@@ -34,6 +33,12 @@ SERVO_NEUTRAL_COMMAND = 0.0
 CONTROL_LOOP_DELAY_S = 0.02
 STALE_TELEMETRY_TIMEOUT_S = 0.5
 
+# Scalar Kalman-filter tuning for roll rate in (deg/s)^2. Increase
+# GYRO_PROCESS_VARIANCE for faster response; increase GYRO_MEASUREMENT_VARIANCE
+# for stronger noise rejection.
+GYRO_PROCESS_VARIANCE = 0.1
+GYRO_MEASUREMENT_VARIANCE = 4.0
+
 # -----------------------------
 # Data models
 # -----------------------------
@@ -42,6 +47,7 @@ STALE_TELEMETRY_TIMEOUT_S = 0.5
 @dataclass
 class TelemetrySnapshot:
     timestamp: str | None = None
+    imu_timestamp: str | None = None
     monotonic_read_time: float | None = None
     altitude_m: float | None = None
     accel_x: float | None = None
@@ -54,6 +60,35 @@ class TelemetrySnapshot:
     lon: float | None = None
     speed_mph: float | None = None
     heading_deg: float | None = None
+
+
+class KalmanFilter1D:
+    """Scalar Kalman filter for a signal modeled as locally constant."""
+
+    def __init__(self, process_variance, measurement_variance):
+        if process_variance < 0:
+            raise ValueError("process_variance must be non-negative")
+        if measurement_variance <= 0:
+            raise ValueError("measurement_variance must be positive")
+
+        self.process_variance = process_variance
+        self.measurement_variance = measurement_variance
+        self.estimate = None
+        self.estimate_variance = None
+
+    def update(self, measurement):
+        if self.estimate is None:
+            self.estimate = measurement
+            self.estimate_variance = self.measurement_variance
+            return self.estimate
+
+        predicted_variance = self.estimate_variance + self.process_variance
+        kalman_gain = predicted_variance / (
+            predicted_variance + self.measurement_variance
+        )
+        self.estimate += kalman_gain * (measurement - self.estimate)
+        self.estimate_variance = (1.0 - kalman_gain) * predicted_variance
+        return self.estimate
 
 
 class GPSReaderTelemetry:
@@ -80,6 +115,7 @@ class GPSReaderTelemetry:
         imu = self._latest_row("imu")
         if imu:
             snapshot.timestamp = imu["timestamp"]
+            snapshot.imu_timestamp = imu["timestamp"]
             snapshot.accel_x = imu["accel_x"]
             snapshot.accel_y = imu["accel_y"]
             snapshot.accel_z = imu["accel_z"]
@@ -196,26 +232,6 @@ def open_command_link(port):
     return serial.Serial(port, BAUD_RATE, timeout=0.1)
 
 
-def write_log_header(logger):
-    logger.writerow([
-        "time",
-        "telemetry_timestamp",
-        "state",
-        "altitude_m",
-        "rotation_x_deg",
-        "rotation_y_deg",
-        "gyro_x_deg_s",
-        "gyro_y_deg_s",
-        "gyro_z_deg_s",
-        "roll_rate_deg_s",
-        "lat",
-        "lon",
-        "speed_mph",
-        "heading_deg",
-        "fin_command"
-    ])
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
@@ -232,11 +248,6 @@ def parse_args():
         "--port",
         default=SERIAL_PORT,
         help="Serial port used to send fin commands to the ESP32. Use 'none' to disable."
-    )
-    parser.add_argument(
-        "--log",
-        default="ground_roll_test_log.csv",
-        help="CSV path for ground-test log output."
     )
     parser.add_argument(
         "--gyro-units",
@@ -271,6 +282,10 @@ def main():
     command_port = None if str(args.port).lower() == "none" else args.port
     telemetry = GPSReaderTelemetry(args.db, gyro_units=args.gyro_units)
     esp32 = open_command_link(command_port)
+    roll_rate_filter = KalmanFilter1D(
+        process_variance=GYRO_PROCESS_VARIANCE,
+        measurement_variance=GYRO_MEASUREMENT_VARIANCE
+    )
 
     print("Ground roll-control test is running.")
     print("This bypasses altitude safety logic and uses aggressive gains.")
@@ -278,85 +293,69 @@ def main():
     print(f"Command port: {command_port or 'disabled'}")
     print("Press Ctrl+C to stop and send neutral.")
 
-    with open(args.log, "w", newline="") as log_file:
-        logger = csv.writer(log_file)
-        write_log_header(logger)
+    last_timestamp = None
+    last_imu_timestamp = None
+    last_fresh_read = time.monotonic()
+    filtered_roll_rate = 0.0
 
-        last_timestamp = None
-        last_fresh_read = time.monotonic()
+    try:
+        while True:
+            snapshot = telemetry.latest()
 
-        try:
-            while True:
-                now = time.time()
-                snapshot = telemetry.latest()
+            if snapshot.timestamp != last_timestamp:
+                last_timestamp = snapshot.timestamp
+                last_fresh_read = time.monotonic()
 
-                if snapshot.timestamp != last_timestamp:
-                    last_timestamp = snapshot.timestamp
-                    last_fresh_read = time.monotonic()
+            is_new_gyro_sample = (
+                snapshot.imu_timestamp is not None
+                and snapshot.imu_timestamp != last_imu_timestamp
+            )
+            if is_new_gyro_sample:
+                last_imu_timestamp = snapshot.imu_timestamp
 
-                rotation_x_deg, rotation_y_deg = estimate_rotation_x_y(snapshot)
+            rotation_x_deg, rotation_y_deg = estimate_rotation_x_y(snapshot)
 
-                gyro_x = snapshot.gyro_x or 0.0
-                gyro_y = snapshot.gyro_y or 0.0
-                gyro_z = snapshot.gyro_z or 0.0
-                roll_rate = select_roll_rate(snapshot, args.roll_axis)
+            raw_roll_rate = select_roll_rate(snapshot, args.roll_axis)
+            if is_new_gyro_sample:
+                filtered_roll_rate = roll_rate_filter.update(raw_roll_rate)
 
-                telemetry_is_fresh = (
-                    time.monotonic() - last_fresh_read
-                ) <= STALE_TELEMETRY_TIMEOUT_S
+            telemetry_is_fresh = (
+                time.monotonic() - last_fresh_read
+            ) <= STALE_TELEMETRY_TIMEOUT_S
 
-                state = "GROUND_TEST_ACTIVE" if telemetry_is_fresh else "STALE_TELEMETRY"
-                fin_command = (
-                    calculate_ground_test_command(
-                        roll_rate,
-                        rotation_x_deg,
-                        rotation_y_deg
-                    )
-                    if telemetry_is_fresh
-                    else SERVO_NEUTRAL_COMMAND
-                )
-
-                if esp32:
-                    send_command_to_esp32(esp32, fin_command)
-
-                logger.writerow([
-                    now,
-                    snapshot.timestamp,
-                    state,
-                    snapshot.altitude_m,
+            state = "GROUND_TEST_ACTIVE" if telemetry_is_fresh else "STALE_TELEMETRY"
+            fin_command = (
+                calculate_ground_test_command(
+                    filtered_roll_rate,
                     rotation_x_deg,
-                    rotation_y_deg,
-                    gyro_x,
-                    gyro_y,
-                    gyro_z,
-                    roll_rate,
-                    snapshot.lat,
-                    snapshot.lon,
-                    snapshot.speed_mph,
-                    snapshot.heading_deg,
-                    fin_command
-                ])
-
-                log_file.flush()
-
-                print(
-                    f"{state} roll_rate={roll_rate:7.2f} deg/s "
-                    f"rot_x={rotation_x_deg:7.2f} rot_y={rotation_y_deg:7.2f} "
-                    f"cmd={fin_command:6.2f}",
-                    end="\r",
-                    flush=True
+                    rotation_y_deg
                 )
+                if telemetry_is_fresh
+                else SERVO_NEUTRAL_COMMAND
+            )
 
-                time.sleep(CONTROL_LOOP_DELAY_S)
+            if esp32:
+                send_command_to_esp32(esp32, fin_command)
 
-        except KeyboardInterrupt:
-            if esp32:
-                send_command_to_esp32(esp32, SERVO_NEUTRAL_COMMAND)
-            print("\nStopped. Neutral command sent.")
-        finally:
-            telemetry.close()
-            if esp32:
-                esp32.close()
+            print(
+                f"{state} roll_rate={filtered_roll_rate:7.2f} deg/s "
+                f"(raw={raw_roll_rate:7.2f}) "
+                f"rot_x={rotation_x_deg:7.2f} rot_y={rotation_y_deg:7.2f} "
+                f"cmd={fin_command:6.2f}",
+                end="\r",
+                flush=True
+            )
+
+            time.sleep(CONTROL_LOOP_DELAY_S)
+
+    except KeyboardInterrupt:
+        if esp32:
+            send_command_to_esp32(esp32, SERVO_NEUTRAL_COMMAND)
+        print("\nStopped. Neutral command sent.")
+    finally:
+        telemetry.close()
+        if esp32:
+            esp32.close()
 
 
 if __name__ == "__main__":
