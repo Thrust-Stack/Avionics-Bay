@@ -22,6 +22,7 @@ import os
 import time
 import sys
 import threading
+import socket
 
 try:
     import pynmea2
@@ -37,6 +38,11 @@ from export_to_excel import export as export_xlsx
 # ============================================================
 COM_PORT = None   # Set to e.g. "/dev/ttyUSB0" to override auto-detect
 BAUD_RATE = 115200
+
+# UDP port on localhost that GroundRollControlTest.py sends ROLL commands to.
+# GPSReader.py forwards them to the ESP32 over the serial port it already holds.
+COMMAND_UDP_PORT  = 5760  # receives ROLL commands from GroundRollControlTest.py
+TELEMETRY_UDP_PORT = 5761  # broadcasts live $IMU packets to GroundRollControlTest.py
 
 # USB-serial chip descriptions used by common ESP32 dev boards
 ESP32_KEYWORDS = ["cp210", "ch340", "ch341", "esp32", "uart", "usb serial", "usb-serial"]
@@ -186,6 +192,20 @@ def parse_gps(line):
     return None, None
 
 
+def command_relay(ser, stop_event):
+    """Receive ROLL commands via UDP from GroundRollControlTest.py and forward to ESP32."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", COMMAND_UDP_PORT))
+    sock.settimeout(0.1)
+    while not stop_event.is_set():
+        try:
+            data, _ = sock.recvfrom(64)
+            ser.write(data)
+        except socket.timeout:
+            pass
+    sock.close()
+
+
 def xlsx_exporter(db_path, stop_event):
     """Background thread: re-exports .xlsx every XLSX_EXPORT_INTERVAL seconds."""
     while not stop_event.wait(XLSX_EXPORT_INTERVAL):
@@ -236,6 +256,11 @@ def main():
         print(f"  {e}")
         sys.exit(1)
 
+    relay = threading.Thread(target=command_relay, args=(ser, stop_event), daemon=True)
+    relay.start()
+
+    telem_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
     time.sleep(2)
     ser.reset_input_buffer()
 
@@ -258,6 +283,7 @@ def main():
                 agl = parse_bmp(line)
                 if agl is not None:
                     alt_count += 1
+                    telem_sock.sendto(line.encode("ascii"), ("127.0.0.1", TELEMETRY_UDP_PORT))
                     print(f"[ALT] Altitude: {agl:.1f}m")
                     conn.execute(
                         "INSERT INTO alt (timestamp, agl_m) VALUES (?, ?)",
@@ -272,6 +298,7 @@ def main():
                 if vals:
                     ax, ay, az, gx, gy, gz = vals
                     imu_count += 1
+                    telem_sock.sendto(line.encode("ascii"), ("127.0.0.1", TELEMETRY_UDP_PORT))
                     print(
                         f"[IMU] Accel: X={ax:.2f} Y={ay:.2f} Z={az:.2f} m/s2  "
                         f"Gyro: X={gx:.2f} Y={gy:.2f} Z={gz:.2f} deg/s"
@@ -288,6 +315,7 @@ def main():
                         if vals:
                             ax, ay, az, gx, gy, gz = vals
                             imu_count += 1
+                            telem_sock.sendto(token.encode("ascii"), ("127.0.0.1", TELEMETRY_UDP_PORT))
                             print(
                                 f"[IMU] Accel: X={ax:.2f} Y={ay:.2f} Z={az:.2f} m/s2  "
                                 f"Gyro: X={gx:.2f} Y={gy:.2f} Z={gz:.2f} deg/s"

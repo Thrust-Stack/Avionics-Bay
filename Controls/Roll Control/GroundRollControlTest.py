@@ -1,12 +1,9 @@
 import argparse
 import glob
 import math
-import os
-import sqlite3
+import socket
 import time
 from dataclasses import dataclass
-
-import serial
 
 # -----------------------------
 # Ground test configuration
@@ -20,14 +17,20 @@ ROLL_RATE_GAIN = 1.4
 TILT_GAIN = 2.0
 MAX_FIN_DEFLECTION = 15.0
 
-SERIAL_PORT = "COM3"
-BAUD_RATE = 115200
+# Must match TELEMETRY_UDP_PORT in GPSReader.py
+TELEMETRY_UDP_PORT = 5761
 
-TELEMETRY_DB_PATH = None
+# Must match COMMAND_HOST / COMMAND_UDP_PORT in GPSReader.py
+COMMAND_HOST = "127.0.0.1"
+COMMAND_PORT = 5760
+
+# If no IMU packet arrives within this window, declare telemetry stale
+# and command servos to neutral.
+UDP_TIMEOUT_S = 0.5
 
 # GPSReader.py logs gyro values in deg/s. Use --gyro-units rad/s if your bridge
 # is sending raw Adafruit gyro radians/second instead.
-GYRO_INPUT_UNITS = "deg/s"
+GYRO_INPUT_UNITS = "rad/s"
 
 SERVO_NEUTRAL_COMMAND = 0.0
 CONTROL_LOOP_DELAY_S = 0.02
@@ -40,7 +43,7 @@ GYRO_PROCESS_VARIANCE = 0.1
 GYRO_MEASUREMENT_VARIANCE = 4.0
 
 # -----------------------------
-# Data models
+# Data model
 # -----------------------------
 
 
@@ -94,17 +97,38 @@ class KalmanFilter1D:
 class GPSReaderTelemetry:
     """Reads the newest telemetry rows written by GPSReader.py."""
 
-    def __init__(self, db_path=None, gyro_units=GYRO_INPUT_UNITS):
-        self.db_path = db_path or find_latest_telemetry_db()
+    def __init__(self, port=TELEMETRY_UDP_PORT, gyro_units=GYRO_INPUT_UNITS):
         self.gyro_units = gyro_units
-        if not self.db_path:
-            raise FileNotFoundError(
-                "No GPSReader database found in logs/. Run GPSReader.py first "
-                "or pass --db path\\to\\flight.db."
-            )
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", port))
 
-        self.conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
-        self.conn.row_factory = sqlite3.Row
+    def receive(self, timeout=UDP_TIMEOUT_S):
+        """Return a TelemetrySnapshot from the next IMU packet, or None on timeout."""
+        self.sock.settimeout(timeout)
+        try:
+            data, _ = self.sock.recvfrom(256)
+        except socket.timeout:
+            return None
+
+        line = data.decode("ascii", errors="replace").strip()
+        if not line.startswith("$IMU,"):
+            return None
+
+        parts = line.split(",")
+        if len(parts) != 7:
+            return None
+
+        try:
+            return TelemetrySnapshot(
+                accel_x=float(parts[1]),
+                accel_y=float(parts[2]),
+                accel_z=float(parts[3]),
+                gyro_x=normalize_gyro(float(parts[4]), self.gyro_units),
+                gyro_y=normalize_gyro(float(parts[5]), self.gyro_units),
+                gyro_z=normalize_gyro(float(parts[6]), self.gyro_units),
+            )
+        except (ValueError, IndexError):
+            return None
 
     def close(self):
         self.conn.close()
@@ -149,34 +173,6 @@ class GPSReaderTelemetry:
 # -----------------------------
 
 
-def repo_root():
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-
-
-def find_latest_telemetry_db():
-    logs_dir = os.path.join(repo_root(), "logs")
-    db_files = glob.glob(os.path.join(logs_dir, "flight_*.db"))
-    if not db_files:
-        return None
-    return max(db_files, key=os.path.getmtime)
-
-
-def newest_timestamp(current, candidate):
-    if current is None:
-        return candidate
-    if candidate is None:
-        return current
-    return max(current, candidate)
-
-
-def signed_coordinate(value, direction):
-    if value is None:
-        return None
-    if direction in ("S", "W"):
-        return -value
-    return value
-
-
 def normalize_gyro(value, units):
     if units == "rad/s":
         return math.degrees(value)
@@ -190,9 +186,7 @@ def clamp(value, lower, upper):
 def estimate_rotation_x_y(snapshot):
     """
     Estimate tilt from accelerometer data.
-
-    This is useful for ground handling and slow movement. Do not use this as a
-    flight attitude source during powered flight.
+    Only valid for slow / ground movement — not for powered flight.
     """
     if None in (snapshot.accel_x, snapshot.accel_y, snapshot.accel_z):
         return 0.0, 0.0
@@ -208,68 +202,48 @@ def estimate_rotation_x_y(snapshot):
 
 
 def calculate_ground_test_command(roll_rate, rotation_x_deg, rotation_y_deg):
-    """
-    Aggressively command fins from both roll rate and body tilt.
-
-    The gyro term reacts to quick rotation around the configured roll axis.
-    The tilt term makes slow hand rotation obvious during bench testing.
-    """
     roll_rate_error = TARGET_ROLL_RATE - roll_rate
     dominant_tilt = rotation_y_deg
-
     command = (ROLL_RATE_GAIN * roll_rate_error) - (TILT_GAIN * dominant_tilt)
     return clamp(command, -MAX_FIN_DEFLECTION, MAX_FIN_DEFLECTION)
 
 
 def send_command_to_esp32(esp32, fin_command):
     message = f"ROLL,{fin_command:.2f}\n"
-    esp32.write(message.encode("utf-8"))
+    esp32.sendto(message.encode("utf-8"), (COMMAND_HOST, COMMAND_PORT))
 
 
-def open_command_link(port):
-    if port is None:
+def open_command_link(enabled):
+    if not enabled:
         return None
-    return serial.Serial(port, BAUD_RATE, timeout=0.1)
+    return socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Aggressive ground-test roll controller. This bypasses the flight "
-            "altitude gate and should not be used as the flight controller."
+            "Aggressive ground-test roll controller. "
+            "Bypasses altitude safety logic — do not use as flight controller."
         )
     )
     parser.add_argument(
-        "--db",
-        default=TELEMETRY_DB_PATH,
-        help="Path to a GPSReader flight_*.db file. Defaults to latest in logs/."
-    )
-    parser.add_argument(
-        "--port",
-        default=SERIAL_PORT,
-        help="Serial port used to send fin commands to the ESP32. Use 'none' to disable."
+        "--no-commands",
+        action="store_true",
+        help="Log only — do not send ROLL commands or move servos.",
     )
     parser.add_argument(
         "--gyro-units",
         choices=("deg/s", "rad/s"),
         default=GYRO_INPUT_UNITS,
-        help="Units stored in the imu gyro columns."
+        help="Gyro units GPSReader.py is storing.",
     )
     parser.add_argument(
         "--roll-axis",
         choices=("x", "y", "z"),
         default="z",
-        help="Gyro axis to treat as rocket roll rate."
+        help="Gyro axis to treat as rocket roll rate.",
     )
     return parser.parse_args()
-
-
-def select_roll_rate(snapshot, axis):
-    if axis == "x":
-        return snapshot.gyro_x or 0.0
-    if axis == "y":
-        return snapshot.gyro_y or 0.0
-    return snapshot.gyro_z or 0.0
 
 
 # -----------------------------
