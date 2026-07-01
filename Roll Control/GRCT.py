@@ -131,46 +131,17 @@ class GPSReaderTelemetry:
             return None
 
     def close(self):
-        self.conn.close()
-
-    def latest(self):
-        snapshot = TelemetrySnapshot(monotonic_read_time=time.monotonic())
-
-        imu = self._latest_row("imu")
-        if imu:
-            snapshot.timestamp = imu["timestamp"]
-            snapshot.imu_timestamp = imu["timestamp"]
-            snapshot.accel_x = imu["accel_x"]
-            snapshot.accel_y = imu["accel_y"]
-            snapshot.accel_z = imu["accel_z"]
-            snapshot.gyro_x = normalize_gyro(imu["gyro_x"], self.gyro_units)
-            snapshot.gyro_y = normalize_gyro(imu["gyro_y"], self.gyro_units)
-            snapshot.gyro_z = normalize_gyro(imu["gyro_z"], self.gyro_units)
-
-        alt = self._latest_row("alt")
-        if alt:
-            snapshot.altitude_m = alt["agl_m"]
-            snapshot.timestamp = newest_timestamp(snapshot.timestamp, alt["timestamp"])
-
-        gps = self._latest_row("gps")
-        if gps:
-            snapshot.lat = signed_coordinate(gps["lat"], gps["lat_dir"])
-            snapshot.lon = signed_coordinate(gps["lon"], gps["lon_dir"])
-            snapshot.speed_mph = gps["speed_mph"]
-            snapshot.heading_deg = gps["heading_deg"]
-            snapshot.timestamp = newest_timestamp(snapshot.timestamp, gps["timestamp"])
-
-        return snapshot
-
-    def _latest_row(self, table):
-        return self.conn.execute(
-            f"SELECT * FROM {table} ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        self.sock.close()
 
 
 # -----------------------------
 # Helper functions
 # -----------------------------
+
+
+def select_roll_rate(snapshot, axis):
+    rate = {"x": snapshot.gyro_x, "y": snapshot.gyro_y, "z": snapshot.gyro_z}.get(axis)
+    return rate if rate is not None else 0.0
 
 
 def normalize_gyro(value, units):
@@ -253,45 +224,33 @@ def parse_args():
 
 def main():
     args = parse_args()
-    command_port = None if str(args.port).lower() == "none" else args.port
-    telemetry = GPSReaderTelemetry(args.db, gyro_units=args.gyro_units)
-    esp32 = open_command_link(command_port)
+    telemetry = GPSReaderTelemetry(gyro_units=args.gyro_units)
+    esp32 = open_command_link(not args.no_commands)
     roll_rate_filter = KalmanFilter1D(
         process_variance=GYRO_PROCESS_VARIANCE,
-        measurement_variance=GYRO_MEASUREMENT_VARIANCE
+        measurement_variance=GYRO_MEASUREMENT_VARIANCE,
     )
 
     print("Ground roll-control test is running.")
     print("This bypasses altitude safety logic and uses aggressive gains.")
-    print(f"Database: {telemetry.db_path}")
-    print(f"Command port: {command_port or 'disabled'}")
+    print(f"Command link: {'disabled' if not esp32 else f'{COMMAND_HOST}:{COMMAND_PORT}'}")
     print("Press Ctrl+C to stop and send neutral.")
 
-    last_timestamp = None
-    last_imu_timestamp = None
     last_fresh_read = time.monotonic()
     filtered_roll_rate = 0.0
+    raw_roll_rate = 0.0
+    rotation_x_deg = 0.0
+    rotation_y_deg = 0.0
 
     try:
         while True:
-            snapshot = telemetry.latest()
+            snapshot = telemetry.receive()
 
-            if snapshot.timestamp != last_timestamp:
-                last_timestamp = snapshot.timestamp
+            if snapshot is not None:
                 last_fresh_read = time.monotonic()
-
-            is_new_gyro_sample = (
-                snapshot.imu_timestamp is not None
-                and snapshot.imu_timestamp != last_imu_timestamp
-            )
-            if is_new_gyro_sample:
-                last_imu_timestamp = snapshot.imu_timestamp
-
-            rotation_x_deg, rotation_y_deg = estimate_rotation_x_y(snapshot)
-
-            raw_roll_rate = select_roll_rate(snapshot, args.roll_axis)
-            if is_new_gyro_sample:
+                raw_roll_rate = select_roll_rate(snapshot, args.roll_axis)
                 filtered_roll_rate = roll_rate_filter.update(raw_roll_rate)
+                rotation_x_deg, rotation_y_deg = estimate_rotation_x_y(snapshot)
 
             telemetry_is_fresh = (
                 time.monotonic() - last_fresh_read
@@ -302,7 +261,7 @@ def main():
                 calculate_ground_test_command(
                     filtered_roll_rate,
                     rotation_x_deg,
-                    rotation_y_deg
+                    rotation_y_deg,
                 )
                 if telemetry_is_fresh
                 else SERVO_NEUTRAL_COMMAND
@@ -317,7 +276,7 @@ def main():
                 f"rot_x={rotation_x_deg:7.2f} rot_y={rotation_y_deg:7.2f} "
                 f"cmd={fin_command:6.2f}",
                 end="\r",
-                flush=True
+                flush=True,
             )
 
             time.sleep(CONTROL_LOOP_DELAY_S)
