@@ -267,6 +267,7 @@ def main():
     gps_fix = False
     latest_alt_msl = None   # raw float, updated from GGA
     latest_alt_str = "---"  # display string
+    latest_gps_alt_time = None
     gps_count = 0
     imu_count = 0
     alt_count = 0
@@ -327,7 +328,17 @@ def main():
 
                     if msg_type == "alt":
                         if data is not None:
+                            gps_alt_time = time.monotonic()
+                            if latest_alt_msl is not None and latest_gps_alt_time is not None:
+                                gps_alt_dt = gps_alt_time - latest_gps_alt_time
+                                if gps_alt_dt > 1e-3:
+                                    gps_vertical_velocity = (data - latest_alt_msl) / gps_alt_dt
+                                    telem_sock.sendto(
+                                        f"$GPS,{gps_vertical_velocity:.3f}".encode("ascii"),
+                                        ("127.0.0.1", TELEMETRY_UDP_PORT),
+                                    )
                             latest_alt_msl = data
+                            latest_gps_alt_time = gps_alt_time
                             latest_alt_str = f"{data:.1f}m"
 
                     elif msg_type == "no_fix":
