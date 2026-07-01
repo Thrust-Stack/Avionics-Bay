@@ -44,6 +44,7 @@
 #define BMP585_ADDR BMP5XX_DEFAULT_ADDRESS  // 0x46
 
 // ── IMU config ───────────────────────────────────────────────
+#define MPU6050_ADDR 0x69  // AD0 reads high on this board despite being wired to GND
 Adafruit_MPU6050 mpu;
 unsigned long lastIMU = 0;
 const unsigned long IMU_INTERVAL = 50;  // 50ms = 20Hz
@@ -117,7 +118,7 @@ void setup() {
   Serial.println("==========================================");
 
   // MPU6050
-  if (!mpu.begin()) {
+  if (!mpu.begin(MPU6050_ADDR)) {
     Serial.println("[ERROR] MPU6050 not found! Check wiring.");
   } else {
     Serial.println("[OK] MPU6050 initialized");
