@@ -1,5 +1,5 @@
 import argparse
-import glob
+import copy
 import math
 import socket
 import threading
@@ -24,6 +24,11 @@ COMMAND_PORT = 5760
 # The ESP32 bridge (Adafruit MPU6050) outputs gyro in radians/second.
 GYRO_INPUT_UNITS = "rad/s"
 
+# Scalar Kalman-filter tuning in (deg/s)^2. Increase process variance for
+# faster response, or measurement variance for stronger noise rejection.
+GYRO_PROCESS_VARIANCE = 0.1
+GYRO_MEASUREMENT_VARIANCE = 4.0
+
 # -----------------------------
 # Safety parameters
 # -----------------------------
@@ -42,6 +47,7 @@ SERVO_NEUTRAL_COMMAND = 0.0
 
 @dataclass
 class TelemetrySnapshot:
+    imu_sequence: int = 0
     altitude_m: float | None = None
     accel_x:    float | None = None
     accel_y:    float | None = None
@@ -49,6 +55,34 @@ class TelemetrySnapshot:
     gyro_x:     float | None = None
     gyro_y:     float | None = None
     gyro_z:     float | None = None
+
+
+class KalmanFilter1D:
+    """Scalar Kalman filter for a signal modeled as locally constant."""
+
+    def __init__(self, process_variance, measurement_variance):
+        if process_variance < 0:
+            raise ValueError("process_variance must be non-negative")
+        if measurement_variance <= 0:
+            raise ValueError("measurement_variance must be positive")
+        self.process_variance = process_variance
+        self.measurement_variance = measurement_variance
+        self.estimate = None
+        self.estimate_variance = None
+
+    def update(self, measurement):
+        if self.estimate is None:
+            self.estimate = measurement
+            self.estimate_variance = self.measurement_variance
+            return self.estimate
+
+        predicted_variance = self.estimate_variance + self.process_variance
+        kalman_gain = predicted_variance / (
+            predicted_variance + self.measurement_variance
+        )
+        self.estimate += kalman_gain * (measurement - self.estimate)
+        self.estimate_variance = (1.0 - kalman_gain) * predicted_variance
+        return self.estimate
 
 
 # -----------------------------
@@ -97,6 +131,7 @@ class LiveTelemetry:
                             self._snapshot.gyro_x = normalize_gyro(float(parts[4]), self.gyro_units)
                             self._snapshot.gyro_y = normalize_gyro(float(parts[5]), self.gyro_units)
                             self._snapshot.gyro_z = normalize_gyro(float(parts[6]), self.gyro_units)
+                            self._snapshot.imu_sequence += 1
                             self._last_imu_time = time.monotonic()
                     except (ValueError, IndexError):
                         pass
@@ -166,6 +201,7 @@ def calculate_fin_command(roll_rate):
 
 
 def send_command_to_esp32(esp32, fin_command):
+    """Send one signed deflection applied to both mirrored roll canards."""
     message = f"ROLL,{fin_command:.2f}\n"
     esp32.sendto(message.encode("utf-8"), (COMMAND_HOST, COMMAND_PORT))
 
@@ -183,7 +219,7 @@ def parse_args():
     parser.add_argument(
         "--no-commands",
         action="store_true",
-        help="Log only — do not send ROLL commands or move servos.",
+        help="Receive telemetry without sending ROLL commands or moving servos.",
     )
     return parser.parse_args()
 
@@ -195,9 +231,14 @@ def parse_args():
 
 def main():
     args = parse_args()
-    command_port = None if str(args.port).lower() == "none" else args.port
-    telemetry = GPSReaderTelemetry(args.db)
-    esp32 = open_command_link(command_port)
+    telemetry = LiveTelemetry()
+    esp32 = open_command_link(not args.no_commands)
+    roll_rate_filter = KalmanFilter1D(
+        process_variance=GYRO_PROCESS_VARIANCE,
+        measurement_variance=GYRO_MEASUREMENT_VARIANCE
+    )
+    last_imu_sequence = 0
+    filtered_roll_rate = 0.0
 
     try:
         while True:
@@ -205,9 +246,11 @@ def main():
 
             rotation_x_deg, rotation_y_deg = estimate_rotation_x_y(snapshot)
 
-            # Choose the gyro axis that matches the rocket's roll axis.
             # The current ESP32 bridge wiring assumes gyro_z is roll rate.
-            roll_rate = snapshot.gyro_z or 0.0
+            raw_roll_rate = snapshot.gyro_z or 0.0
+            if snapshot.imu_sequence != last_imu_sequence:
+                last_imu_sequence = snapshot.imu_sequence
+                filtered_roll_rate = roll_rate_filter.update(raw_roll_rate)
 
             allowed = control_is_allowed(
                 snapshot.altitude_m,
@@ -215,9 +258,9 @@ def main():
                 rotation_y_deg
             )
 
-            state = "CONTROL_ACTIVE" if allowed else "IDLE"
+            state = "CONTROL_ACTIVE" if allowed and telemetry.is_fresh() else "IDLE"
             fin_command = (
-                calculate_fin_command(roll_rate)
+                calculate_fin_command(filtered_roll_rate)
                 if state == "CONTROL_ACTIVE"
                 else SERVO_NEUTRAL_COMMAND
             )

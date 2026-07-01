@@ -181,6 +181,7 @@ def select_roll_rate(snapshot, axis):
 
 
 def send_command_to_esp32(esp32, fin_command):
+    """Send one signed deflection applied to both mirrored roll canards."""
     message = f"ROLL,{fin_command:.2f}\n"
     esp32.sendto(message.encode("utf-8"), (COMMAND_HOST, COMMAND_PORT))
 

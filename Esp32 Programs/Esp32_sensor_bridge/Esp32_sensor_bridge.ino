@@ -3,8 +3,8 @@
  *
  * Reads GPS on UART2, MPU6050 and BMP585 on I2C,
  * forwards all sensor data to USB serial for the laptop.
- * Receives ROLL,<angle> commands from the laptop and
- * actuates two canard servos via PCA9685 PWM controller.
+ * Receives ROLL,<angle> commands from the laptop and applies the same signed
+ * deflection to both mirrored canards via the PCA9685 PWM controller.
  *
  * Wiring:
  *   GPS VIN      -> ESP32 3.3V
@@ -83,11 +83,11 @@ uint16_t angleToPWM(float angle) {
   return (uint16_t)(us / 20000.0f * 4096.0f);
 }
 
-// Apply differential deflection: canard1 goes up, canard2 goes down (and vice versa)
+// Apply one signed deflection to both mirrored canards in the same servo direction.
 void setCanards(float fin_command) {
   fin_command = constrain(fin_command, -MAX_DEFLECTION, MAX_DEFLECTION);
   float angle1 = NEUTRAL_ANGLE + CANARD1_TRIM + fin_command;
-  float angle2 = NEUTRAL_ANGLE + CANARD2_TRIM - fin_command;
+  float angle2 = NEUTRAL_ANGLE + CANARD2_TRIM + fin_command;
   pwm.setPWM(CANARD1_CH, 0, angleToPWM(angle1));
   pwm.setPWM(CANARD2_CH, 0, angleToPWM(angle2));
   Serial.printf("[ROLL] cmd=%.2f  canard1=%.1f°  canard2=%.1f°\n",
