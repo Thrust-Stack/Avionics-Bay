@@ -195,6 +195,7 @@ def parse_gps(line):
 def command_relay(ser, stop_event):
     """Receive ROLL commands via UDP from GroundRollControlTest.py and forward to ESP32."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", COMMAND_UDP_PORT))
     sock.settimeout(0.1)
     while not stop_event.is_set():
