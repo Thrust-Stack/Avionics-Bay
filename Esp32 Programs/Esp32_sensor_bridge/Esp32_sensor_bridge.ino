@@ -45,6 +45,7 @@
 
 // ── IMU config ───────────────────────────────────────────────
 Adafruit_MPU6050 mpu;
+bool  mpuReady           = false;
 unsigned long lastIMU    = 0;
 const unsigned long IMU_INTERVAL = 50;  // 50ms = 20Hz
 
@@ -117,8 +118,9 @@ void setup() {
 
   // MPU6050
   if (!mpu.begin()) {
-    Serial.println("[ERROR] MPU6050 not found! Check wiring.");
+    Serial.println("[ERROR] MPU6050 not found! Check wiring on GPIO 21/22.");
   } else {
+    mpuReady = true;
     Serial.println("[OK] MPU6050 initialized");
     mpu.setAccelerometerRange(MPU6050_RANGE_16_G);
     mpu.setGyroRange(MPU6050_RANGE_500_DEG);
@@ -188,7 +190,7 @@ void loop() {
   }
 
   // IMU at 20Hz
-  if (millis() - lastIMU >= IMU_INTERVAL) {
+  if (mpuReady && (millis() - lastIMU >= IMU_INTERVAL)) {
     lastIMU = millis();
     sensors_event_t accel, gyro, temp;
     mpu.getEvent(&accel, &gyro, &temp);
