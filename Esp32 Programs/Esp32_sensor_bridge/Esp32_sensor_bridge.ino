@@ -4,7 +4,7 @@
  * Reads GPS on UART2, MPU6050 and BMP585 on I2C,
  * forwards all sensor data to USB serial for the laptop.
  * Receives ROLL,<angle> commands from the laptop and
- * actuates two canard servos via PCA9685 PWM controller.
+ * actuates two canard servos via ESP32 LEDC PWM on GPIO 26/25.
  *
  * Wiring:
  *   GPS VIN      -> ESP32 3.3V
@@ -15,15 +15,12 @@
  *   MPU SCL      -> ESP32 GPIO 22  (shared I2C bus)
  *   BMP SDA      -> ESP32 GPIO 21  (shared I2C bus)
  *   BMP SCL      -> ESP32 GPIO 22  (shared I2C bus)
- *   PCA9685 SDA  -> ESP32 GPIO 21  (shared I2C bus)
- *   PCA9685 SCL  -> ESP32 GPIO 22  (shared I2C bus)
- *   Canard 1     -> PCA9685 channel 0
- *   Canard 2     -> PCA9685 channel 1
+ *   Canard 1     -> ESP32 GPIO 26
+ *   Canard 2     -> ESP32 GPIO 25
  *
  * Install libraries in Arduino IDE (Tools -> Manage Libraries):
  *   - Adafruit MPU6050
  *   - Adafruit BMP5xx
- *   - Adafruit PWM Servo Driver Library
  *   - Adafruit Unified Sensor
  *
  * Board: NodeMCU-32S
@@ -33,7 +30,6 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BMP5xx.h>
-#include <Adafruit_PWMServoDriver.h>
 
 // ── GPS config ───────────────────────────────────────────────
 #define GPS_RX_PIN  16
@@ -56,17 +52,14 @@ bool  bmpReady           = false;
 unsigned long lastALT    = 0;
 const unsigned long ALT_INTERVAL = 100;  // 100ms = 10Hz
 
-// ── PCA9685 / servo config ───────────────────────────────────
-#define PCA9685_ADDR    0x40
+// ── Servo config (direct LEDC PWM) ──────────────────────────────────────
+#define CANARD1_PIN     26
+#define CANARD2_PIN     25
 #define SERVO_FREQ_HZ   50
 #define SERVO_MIN_US    500    // pulse width for 0°
 #define SERVO_MAX_US    2400   // pulse width for 180°
-#define CANARD1_CH      0
-#define CANARD2_CH      1
 #define NEUTRAL_ANGLE   90.0f  // resting angle when no command
 #define MAX_DEFLECTION  15.0f  // matches GroundRollControlTest.py clamp
-
-Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(PCA9685_ADDR);
 
 // ── Buffers ──────────────────────────────────────────────────
 String gpsBuffer = "";   // GPS NMEA line assembly
@@ -75,11 +68,11 @@ String cmdBuffer = "";   // incoming laptop command line assembly
 
 // ── Helpers ──────────────────────────────────────────────────
 
-// Convert servo angle (0–180°) to PCA9685 12-bit count
-uint16_t angleToPWM(float angle) {
+// Convert servo angle (0–180°) to LEDC 16-bit duty count
+uint32_t angleToPWM16(float angle) {
   angle = constrain(angle, 0.0f, 180.0f);
   float us = SERVO_MIN_US + (angle / 180.0f) * (float)(SERVO_MAX_US - SERVO_MIN_US);
-  return (uint16_t)(us / 20000.0f * 4096.0f);
+  return (uint32_t)(us / 20000.0f * 65535.0f);
 }
 
 // Apply a differential fin deflection to both canards
@@ -88,8 +81,8 @@ void setCanards(float fin_command) {
   fin_command = constrain(fin_command, -MAX_DEFLECTION, MAX_DEFLECTION);
   float angle1 = NEUTRAL_ANGLE + fin_command;
   float angle2 = NEUTRAL_ANGLE - fin_command;
-  pwm.setPWM(CANARD1_CH, 0, angleToPWM(angle1));
-  pwm.setPWM(CANARD2_CH, 0, angleToPWM(angle2));
+  ledcWrite(CANARD1_PIN, angleToPWM16(angle1));
+  ledcWrite(CANARD2_PIN, angleToPWM16(angle2));
   Serial.printf("[ROLL] cmd=%.2f  canard1=%.1f°  canard2=%.1f°\n",
                 fin_command, angle1, angle2);
 }
@@ -158,18 +151,12 @@ void setup() {
     }
   }
 
-  // PCA9685
-  pwm.begin();
-  // If servos run at wrong speed, adjust oscillator frequency to match your board:
-  //   Genuine Adafruit PCA9685: 25000000
-  //   Many clone boards:        27000000
-  pwm.setOscillatorFrequency(27000000);
-  pwm.setPWMFreq(SERVO_FREQ_HZ);
-  delay(10);
-  // Park canards at neutral
-  pwm.setPWM(CANARD1_CH, 0, angleToPWM(NEUTRAL_ANGLE));
-  pwm.setPWM(CANARD2_CH, 0, angleToPWM(NEUTRAL_ANGLE));
-  Serial.println("[OK] PCA9685 initialized — canards at neutral");
+  // Canard servos — LEDC PWM on GPIO 26 (canard 1) and GPIO 25 (canard 2)
+  ledcAttach(CANARD1_PIN, SERVO_FREQ_HZ, 16);
+  ledcAttach(CANARD2_PIN, SERVO_FREQ_HZ, 16);
+  ledcWrite(CANARD1_PIN, angleToPWM16(NEUTRAL_ANGLE));
+  ledcWrite(CANARD2_PIN, angleToPWM16(NEUTRAL_ANGLE));
+  Serial.println("[OK] Servos initialized — canards at neutral");
 
   Serial.println("[OK] GPS UART initialized");
   Serial.println("==========================================");
