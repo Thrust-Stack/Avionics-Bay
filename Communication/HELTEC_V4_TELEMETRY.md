@@ -25,3 +25,45 @@ required distance before flight.
 915 MHz is a US-oriented default, not a universal setting. Both sketches must
 always use identical frequency, bandwidth, spreading factor, coding rate, sync
 word, preamble, CRC, and packet layout.
+
+## Two-computer packet-delivery test
+
+This test matches packet IDs from both computers, so their clocks do not need
+to be synchronized. The transmitter must be compiled with **USB CDC On Boot:
+Enabled** for its successful-transmit lines to be visible over USB.
+
+On both computers, copy the `Communication` folder and install the serial
+dependency:
+
+```powershell
+py -m pip install -r Communication\requirements-link-test.txt
+```
+
+Connect the avionics transmitter to computer 1 and the ground receiver to
+computer 2. Find each current port with `arduino-cli board list`. Start the
+captures at roughly the same time; a few seconds of difference is acceptable.
+
+Computer 1 (replace `COM7` if needed):
+
+```powershell
+py Communication\heltec_link_test.py tx --port COM7 --duration 120 --output tx_report.json
+```
+
+Computer 2 (replace `COM9` if needed):
+
+```powershell
+py Communication\heltec_link_test.py rx --port COM9 --duration 120 --output rx_report.json
+```
+
+Copy both JSON files onto either computer, then compare the overlapping packet
+ID range:
+
+```powershell
+py Communication\heltec_link_test.py compare tx_report.json rx_report.json
+```
+
+The comparison prints packets sent successfully, packets received, missing
+packet IDs, and delivery percentage. The receiver report also includes average
+RSSI and SNR. For a useful range test, run for at least 120 seconds, keep the
+ground antenna fixed, and record distance, antenna orientation, obstructions,
+and LoRa settings alongside the reports.
