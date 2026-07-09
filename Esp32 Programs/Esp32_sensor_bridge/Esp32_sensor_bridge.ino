@@ -2,8 +2,9 @@
  * Avionics Sensor Bridge + Roll Control — ESP32
  *
  * Reads GPS on UART2, MPU6050 and BMP585 on I2C,
- * forwards all sensor data to USB serial for the laptop.
- * Receives ROLL,<angle> commands from the laptop and
+ * forwards all sensor data to Raspberry Pi over UART1 (GPIO 33 TX / GPIO 27 RX).
+ * Receives ROLL,<angle> commands from the Pi on the same UART1.
+ * USB Serial (Serial) is debug-only for Arduino IDE Serial Monitor.
  * actuates two canard servos via ESP32 LEDC PWM on GPIO 26/25.
  *
  * Wiring:
@@ -17,6 +18,9 @@
  *   BMP SCL      -> ESP32 GPIO 22  (shared I2C bus)
  *   Canard 1     -> ESP32 GPIO 26
  *   Canard 2     -> ESP32 GPIO 25
+ *   Pi GPIO14    -> ESP32 GPIO 27  (Pi TX → ESP32 RX)
+ *   Pi GPIO15    -> ESP32 GPIO 33  (Pi RX → ESP32 TX)
+ *   Pi GND       -> ESP32 GND      (common ground — required)
  *
  * Install libraries in Arduino IDE (Tools -> Manage Libraries):
  *   - Adafruit MPU6050
@@ -61,9 +65,14 @@ const unsigned long ALT_INTERVAL = 100;  // 100ms = 10Hz
 #define NEUTRAL_ANGLE   90.0f  // resting angle when no command
 #define MAX_DEFLECTION  15.0f  // matches GroundRollControlTest.py clamp
 
+// ── Pi UART (Serial1 on GPIO 33 TX / 27 RX) ─────────────────
+#define PI_RX_PIN  27
+#define PI_TX_PIN  33
+#define PI_BAUD    115200
+
 // ── Buffers ──────────────────────────────────────────────────
 String gpsBuffer = "";   // GPS NMEA line assembly
-String cmdBuffer = "";   // incoming laptop command line assembly
+String cmdBuffer = "";   // incoming Pi command line assembly
 
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -98,8 +107,8 @@ void processCommand(const String& line) {
 
 // ── Setup ────────────────────────────────────────────────────
 void setup() {
-  Serial.begin(115200);
-  while (!Serial) { delay(10); }
+  Serial.begin(115200);                                          // USB debug only
+  Serial1.begin(PI_BAUD, SERIAL_8N1, PI_RX_PIN, PI_TX_PIN);    // Pi comms
 
   Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
 
@@ -166,12 +175,12 @@ void setup() {
 
 // ── Main loop ────────────────────────────────────────────────
 void loop() {
-  // Forward GPS NMEA sentences to USB serial
+  // Forward GPS NMEA sentences to Pi
   while (Serial2.available()) {
     char c = Serial2.read();
     gpsBuffer += c;
     if (c == '\n') {
-      Serial.print(gpsBuffer);
+      Serial1.print(gpsBuffer);
       gpsBuffer = "";
     }
   }
@@ -181,13 +190,13 @@ void loop() {
     lastIMU = millis();
     sensors_event_t accel, gyro, temp;
     mpu.getEvent(&accel, &gyro, &temp);
-    Serial.print("$IMU,");
-    Serial.print(accel.acceleration.x, 3); Serial.print(",");
-    Serial.print(accel.acceleration.y, 3); Serial.print(",");
-    Serial.print(accel.acceleration.z, 3); Serial.print(",");
-    Serial.print(gyro.gyro.x, 3);          Serial.print(",");
-    Serial.print(gyro.gyro.y, 3);          Serial.print(",");
-    Serial.println(gyro.gyro.z, 3);
+    Serial1.print("$IMU,");
+    Serial1.print(accel.acceleration.x, 3); Serial1.print(",");
+    Serial1.print(accel.acceleration.y, 3); Serial1.print(",");
+    Serial1.print(accel.acceleration.z, 3); Serial1.print(",");
+    Serial1.print(gyro.gyro.x, 3);          Serial1.print(",");
+    Serial1.print(gyro.gyro.y, 3);          Serial1.print(",");
+    Serial1.println(gyro.gyro.z, 3);
   }
 
   // BMP585 altitude at 10Hz
@@ -195,14 +204,14 @@ void loop() {
     lastALT = millis();
     if (bmp585.performReading()) {
       float agl = 44330.0f * (1.0f - powf(bmp585.pressure / groundPressure, 0.1903f));
-      Serial.print("$ALT,");
-      Serial.println(agl, 2);
+      Serial1.print("$ALT,");
+      Serial1.println(agl, 2);
     }
   }
 
-  // Parse ROLL commands from the laptop (line-buffered)
-  while (Serial.available()) {
-    char c = Serial.read();
+  // Parse ROLL commands from Pi (line-buffered)
+  while (Serial1.available()) {
+    char c = Serial1.read();
     if (c == '\n') {
       cmdBuffer.trim();
       if (cmdBuffer.length() > 0) {
