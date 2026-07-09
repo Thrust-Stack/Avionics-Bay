@@ -1,0 +1,10 @@
+# Generated logs and exports
+logs/
+Roll Control/logs/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/

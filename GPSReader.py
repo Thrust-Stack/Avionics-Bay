@@ -36,7 +36,7 @@ from export_to_excel import export as export_xlsx
 # ============================================================
 # CONFIGURATION
 # ============================================================
-COM_PORT = None   # Set to e.g. "/dev/ttyUSB0" to override auto-detect
+COM_PORT = "/dev/serial0"  # Hardware UART on Pi GPIO14(TX)/GPIO15(RX)
 BAUD_RATE = 115200
 
 # UDP port on localhost that GroundRollControlTest.py sends ROLL commands to.
