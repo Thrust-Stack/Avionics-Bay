@@ -36,7 +36,7 @@ from export_to_excel import export as export_xlsx
 # ============================================================
 # CONFIGURATION
 # ============================================================
-COM_PORT = "/dev/serial0"  # Hardware UART on Pi GPIO14(TX)/GPIO15(RX)
+COM_PORT = "/dev/ttyAMA0"  # Hardware UART on Pi GPIO14(TX)/GPIO15(RX) — on Pi 5, /dev/serial0 is the debug connector, NOT the GPIO header
 BAUD_RATE = 115200
 
 # UDP port on localhost that GroundRollControlTest.py sends ROLL commands to.
