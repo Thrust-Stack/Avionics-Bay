@@ -47,8 +47,13 @@ STANDARD_GRAVITY_M_S2 = 9.80665
 # -----------------------------
 
 MIN_CONTROL_ALTITUDE_M = 0.0
-MAX_X_ROTATION_DEG     = 90.0
-MAX_Y_ROTATION_DEG     = 90.0
+# Kill control once the nose is more than this far from vertical. acos(az/|a|)
+# yields a true 0–180° tilt, so a nose-down attitude (>90°) is caught instead of
+# aliasing back toward 0° the way per-axis atan2 tilt does.
+MAX_TILT_FROM_VERTICAL_DEG = 90.0
+# Inhibit canard control once clearly descending. A small threshold keeps control
+# from chattering as vertical velocity crosses zero at apogee.
+DESCENT_INHIBIT_M_S    = 2.0   # descent rate (negative velocity) that halts control
 STALE_TIMEOUT_S        = 0.5   # seconds without IMU data → stale
 
 SERVO_NEUTRAL_COMMAND = 0.0
@@ -285,31 +290,44 @@ def clamp(value, lower, upper):
     return max(lower, min(value, upper))
 
 
-def estimate_rotation_x_y(snapshot):
+def tilt_from_vertical_deg(snapshot):
+    """Angle between the roll axis (nose) and world-up, 0–180°.
+
+    Uses acos(az/|a|) rather than per-axis atan2 tilt: the latter buries az in a
+    positive square root and folds at ±90°, so a nose-down attitude aliases back
+    toward 0° and slips past the kill limit. This form reads 180° when the nose
+    points straight down. Relies on the same az≈+g nose-up convention the
+    velocity integrator assumes.
+    """
     if None in (snapshot.accel_x, snapshot.accel_y, snapshot.accel_z):
-        return 0.0, 0.0
+        return 0.0
 
     ax = snapshot.accel_x
     ay = snapshot.accel_y
     az = snapshot.accel_z
 
-    rotation_x_deg = math.degrees(math.atan2(ay, math.sqrt(ax * ax + az * az)))
-    rotation_y_deg = math.degrees(math.atan2(-ax, math.sqrt(ay * ay + az * az)))
+    norm = math.sqrt(ax * ax + ay * ay + az * az)
+    if norm < 1e-6:
+        return 0.0
 
-    return rotation_x_deg, rotation_y_deg
+    return math.degrees(math.acos(clamp(az / norm, -1.0, 1.0)))
 
 
-def control_is_allowed(altitude_m, rotation_x_deg, rotation_y_deg):
+def control_is_allowed(altitude_m, tilt_deg, vertical_velocity_m_s):
     effective_alt = altitude_m if altitude_m is not None else 0.0
+    descending = (
+        vertical_velocity_m_s is not None
+        and vertical_velocity_m_s < -DESCENT_INHIBIT_M_S
+    )
     return (
         effective_alt >= MIN_CONTROL_ALTITUDE_M
-        and abs(rotation_x_deg) < MAX_X_ROTATION_DEG
-        and abs(rotation_y_deg) < MAX_Y_ROTATION_DEG
+        and tilt_deg < MAX_TILT_FROM_VERTICAL_DEG
+        and not descending
     )
 
 
 def calculate_gain_from_vertical_velocity(vertical_velocity_m_s):
-    if vertical_velocity_m_s is None or vertical_velocity_m_s < MIN_VERTICAL_VELOCITY_M_S:
+    if vertical_velocity_m_s is None or abs(vertical_velocity_m_s) < MIN_VERTICAL_VELOCITY_M_S:
         return KP
     return KP / (CANARD_ACCELERATION_COEFFICIENT * vertical_velocity_m_s**2)
 
@@ -396,7 +414,7 @@ def main():
             fused_velocity_m_s = velocity_filter.estimate
             telemetry.set_fused_velocity(fused_velocity_m_s)
 
-            rotation_x_deg, rotation_y_deg = estimate_rotation_x_y(snapshot)
+            tilt_deg = tilt_from_vertical_deg(snapshot)
 
             # The current ESP32 bridge wiring assumes gyro_z is roll rate.
             raw_roll_rate = snapshot.gyro_z or 0.0
@@ -406,8 +424,8 @@ def main():
 
             allowed = control_is_allowed(
                 snapshot.altitude_m,
-                rotation_x_deg,
-                rotation_y_deg
+                tilt_deg,
+                fused_velocity_m_s,
             )
 
             state = "CONTROL_ACTIVE" if allowed and telemetry.is_fresh() else "IDLE"
