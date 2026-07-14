@@ -1,9 +1,16 @@
 import argparse
+import datetime
 import glob
 import math
+import os
 import socket
+import sqlite3
 import time
 from dataclasses import dataclass
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGS_DIR   = os.path.join(SCRIPT_DIR, "logs")
+DB_PATH    = os.path.join(LOGS_DIR, "GRCTRollData.db")
 
 # -----------------------------
 # Ground test configuration
@@ -35,6 +42,28 @@ GYRO_INPUT_UNITS = "rad/s"
 SERVO_NEUTRAL_COMMAND = 0.0
 CONTROL_LOOP_DELAY_S = 0.02
 STALE_TELEMETRY_TIMEOUT_S = 0.5
+
+
+def now():
+    return datetime.datetime.now().isoformat(sep=" ", timespec="milliseconds")
+
+
+def init_db(path):
+    conn = sqlite3.connect(path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS roll_control (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp           TEXT    NOT NULL,
+            state               TEXT    NOT NULL,
+            raw_roll_rate       REAL    NOT NULL,
+            filtered_roll_rate  REAL    NOT NULL,
+            rotation_x_deg      REAL    NOT NULL,
+            rotation_y_deg      REAL    NOT NULL,
+            fin_command         REAL    NOT NULL
+        )
+    """)
+    conn.commit()
+    return conn
 
 # Scalar Kalman-filter tuning for roll rate in (deg/s)^2. Increase
 # GYRO_PROCESS_VARIANCE for faster response; increase GYRO_MEASUREMENT_VARIANCE
@@ -231,9 +260,13 @@ def main():
         measurement_variance=GYRO_MEASUREMENT_VARIANCE,
     )
 
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    conn = init_db(DB_PATH)
+
     print("Ground roll-control test is running.")
     print("This bypasses altitude safety logic and uses aggressive gains.")
     print(f"Command link: {'disabled' if not esp32 else f'{COMMAND_HOST}:{COMMAND_PORT}'}")
+    print(f"Log:          {DB_PATH}")
     print("Press Ctrl+C to stop and send neutral.")
 
     last_fresh_read = time.monotonic()
@@ -279,13 +312,25 @@ def main():
                 flush=True,
             )
 
+            conn.execute(
+                "INSERT INTO roll_control "
+                "(timestamp, state, raw_roll_rate, filtered_roll_rate, "
+                " rotation_x_deg, rotation_y_deg, fin_command) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (now(), state, raw_roll_rate, filtered_roll_rate,
+                 rotation_x_deg, rotation_y_deg, fin_command),
+            )
+            conn.commit()
+
             time.sleep(CONTROL_LOOP_DELAY_S)
 
     except KeyboardInterrupt:
         if esp32:
             send_command_to_esp32(esp32, SERVO_NEUTRAL_COMMAND)
         print("\nStopped. Neutral command sent.")
+        print(f"Session saved to: {DB_PATH}")
     finally:
+        conn.close()
         telemetry.close()
         if esp32:
             esp32.close()

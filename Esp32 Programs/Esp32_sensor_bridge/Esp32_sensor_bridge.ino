@@ -20,9 +20,15 @@
  *   them HIGH with no load: they cannot reach 3.3V). Do not use them.
  *   Canard 1     -> ESP32 GPIO 26
  *   Canard 2     -> ESP32 GPIO 25
+<<<<<<< HEAD
  *   Pi GPIO14    -> ESP32 GPIO 27  (Pi TX â†’ ESP32 RX)
  *   Pi GPIO15    -> ESP32 GPIO 33  (Pi RX â†’ ESP32 TX)
  *   Pi GND       -> ESP32 GND      (common ground â€” required)
+=======
+ *   Pi GPIO14    -> ESP32 GPIO 27  (Pi TX → ESP32 RX)
+ *   Pi GPIO15    -> ESP32 GPIO 33  (Pi RX → ESP32 TX)
+ *   Pi GND       -> ESP32 GND      (common ground — required)
+>>>>>>> 648c0f90602b1a38633fe7594ae56081460e7a02
  *
  * Install libraries in Arduino IDE (Tools -> Manage Libraries):
  *   - Adafruit MPU6050
@@ -67,11 +73,16 @@ const unsigned long ALT_INTERVAL = 100;  // 100ms = 10Hz
 #define NEUTRAL_ANGLE   90.0f  // resting angle when no command
 #define MAX_DEFLECTION  15.0f  // matches GroundRollControlTest.py clamp
 
+<<<<<<< HEAD
 // â”€â”€ Pi UART (Serial1 on GPIO 33 TX / 27 RX) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+=======
+// ── Pi UART (Serial1 on GPIO 33 TX / 27 RX) ─────────────────
+>>>>>>> 648c0f90602b1a38633fe7594ae56081460e7a02
 #define PI_RX_PIN  27
 #define PI_TX_PIN  33
 #define PI_BAUD    115200
 
+<<<<<<< HEAD
 // â”€â”€ I2C bus (SDA GPIO 23 / SCL GPIO 32) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GPIO 18/19/21/22 are damaged on this board â€” do not use.
 #define I2C_SDA_PIN  23
@@ -82,6 +93,9 @@ const unsigned long ALT_INTERVAL = 100;  // 100ms = 10Hz
 #define DEBUG_USB  1
 
 // â”€â”€ Buffers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+=======
+// ── Buffers ──────────────────────────────────────────────────
+>>>>>>> 648c0f90602b1a38633fe7594ae56081460e7a02
 String gpsBuffer = "";   // GPS NMEA line assembly
 String cmdBuffer = "";   // incoming Pi command line assembly
 
@@ -201,6 +215,7 @@ void loop() {
     lastIMU = millis();
     sensors_event_t accel, gyro, temp;
     mpu.getEvent(&accel, &gyro, &temp);
+<<<<<<< HEAD
     char imuLine[96];
     snprintf(imuLine, sizeof(imuLine), "$IMU,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
              accel.acceleration.x, accel.acceleration.y, accel.acceleration.z,
@@ -209,6 +224,15 @@ void loop() {
 #if DEBUG_USB
     Serial.print(imuLine);
 #endif
+=======
+    Serial1.print("$IMU,");
+    Serial1.print(accel.acceleration.x, 3); Serial1.print(",");
+    Serial1.print(accel.acceleration.y, 3); Serial1.print(",");
+    Serial1.print(accel.acceleration.z, 3); Serial1.print(",");
+    Serial1.print(gyro.gyro.x, 3);          Serial1.print(",");
+    Serial1.print(gyro.gyro.y, 3);          Serial1.print(",");
+    Serial1.println(gyro.gyro.z, 3);
+>>>>>>> 648c0f90602b1a38633fe7594ae56081460e7a02
   }
 
   // BMP585 altitude at 10Hz
@@ -216,12 +240,17 @@ void loop() {
     lastALT = millis();
     if (bmp585.performReading()) {
       float agl = 44330.0f * (1.0f - powf(bmp585.pressure / groundPressure, 0.1903f));
+<<<<<<< HEAD
       char altLine[32];
       snprintf(altLine, sizeof(altLine), "$ALT,%.2f\n", agl);
       Serial1.print(altLine);
 #if DEBUG_USB
       Serial.print(altLine);
 #endif
+=======
+      Serial1.print("$ALT,");
+      Serial1.println(agl, 2);
+>>>>>>> 648c0f90602b1a38633fe7594ae56081460e7a02
     }
   }
 

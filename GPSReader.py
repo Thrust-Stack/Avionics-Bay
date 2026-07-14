@@ -36,7 +36,7 @@ from export_to_excel import export as export_xlsx
 # ============================================================
 # CONFIGURATION
 # ============================================================
-COM_PORT = None   # Set to e.g. "/dev/ttyUSB0" to override auto-detect
+COM_PORT = "/dev/ttyAMA0"  # Hardware UART on Pi GPIO14(TX)/GPIO15(RX) — on Pi 5, /dev/serial0 is the debug connector, NOT the GPIO header
 BAUD_RATE = 115200
 
 # UDP port on localhost that GroundRollControlTest.py sends ROLL commands to.
@@ -195,6 +195,7 @@ def parse_gps(line):
 def command_relay(ser, stop_event):
     """Receive ROLL commands via UDP from GroundRollControlTest.py and forward to ESP32."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", COMMAND_UDP_PORT))
     sock.settimeout(0.1)
     while not stop_event.is_set():

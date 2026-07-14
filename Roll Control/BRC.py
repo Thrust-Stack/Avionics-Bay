@@ -1,10 +1,18 @@
 import argparse
+import copy
+import datetime
 import glob
 import math
+import os
 import socket
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGS_DIR   = os.path.join(SCRIPT_DIR, "logs")
+DB_PATH    = os.path.join(LOGS_DIR, "BRCRollData.db")
 
 # -----------------------------
 # Configuration
@@ -34,6 +42,30 @@ MAX_Y_ROTATION_DEG     = 90.0
 STALE_TIMEOUT_S        = 0.5   # seconds without IMU data → stale
 
 SERVO_NEUTRAL_COMMAND = 0.0
+
+
+def now():
+    return datetime.datetime.now().isoformat(sep=" ", timespec="milliseconds")
+
+
+def init_db(path):
+    conn = sqlite3.connect(path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS roll_control (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp        TEXT    NOT NULL,
+            state            TEXT    NOT NULL,
+            altitude_m       REAL,
+            roll_rate        REAL    NOT NULL,
+            rotation_x_deg   REAL    NOT NULL,
+            rotation_y_deg   REAL    NOT NULL,
+            control_allowed  INTEGER NOT NULL,
+            fin_command      REAL    NOT NULL
+        )
+    """)
+    conn.commit()
+    return conn
+
 
 # -----------------------------
 # Data model
@@ -195,9 +227,16 @@ def parse_args():
 
 def main():
     args = parse_args()
-    command_port = None if str(args.port).lower() == "none" else args.port
-    telemetry = GPSReaderTelemetry(args.db)
-    esp32 = open_command_link(command_port)
+    telemetry = LiveTelemetry()
+    esp32 = open_command_link(not args.no_commands)
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    conn = init_db(DB_PATH)
+
+    print("Roll controller running — requires GPSReader.py to be running first.")
+    print(f"Command link: {'disabled' if not esp32 else f'{COMMAND_HOST}:{COMMAND_PORT}'}")
+    print(f"Log:          {DB_PATH}")
+    print("Press Ctrl+C to stop and send neutral.")
 
     try:
         while True:
@@ -225,12 +264,36 @@ def main():
             if esp32:
                 send_command_to_esp32(esp32, fin_command)
 
+            fresh = "LIVE" if telemetry.is_fresh() else "STALE"
+            print(
+                f"{state} [{fresh}] "
+                f"roll_rate={roll_rate:7.2f} deg/s  "
+                f"rot_x={rotation_x_deg:7.2f}  rot_y={rotation_y_deg:7.2f}  "
+                f"alt={snapshot.altitude_m if snapshot.altitude_m is not None else '---':>6}  "
+                f"cmd={fin_command:6.2f}",
+                end="\r",
+                flush=True,
+            )
+
+            conn.execute(
+                "INSERT INTO roll_control "
+                "(timestamp, state, altitude_m, roll_rate, "
+                " rotation_x_deg, rotation_y_deg, control_allowed, fin_command) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (now(), state, snapshot.altitude_m, roll_rate,
+                 rotation_x_deg, rotation_y_deg, int(allowed), fin_command),
+            )
+            conn.commit()
+
             time.sleep(0.01)  # 100 Hz loop
 
     except KeyboardInterrupt:
         if esp32:
             send_command_to_esp32(esp32, SERVO_NEUTRAL_COMMAND)
+        print("\nStopped. Neutral command sent.")
+        print(f"Session saved to: {DB_PATH}")
     finally:
+        conn.close()
         telemetry.close()
         if esp32:
             esp32.close()
