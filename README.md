@@ -69,54 +69,85 @@ roll-rate error into a commanded canard deflection.
 
 ## 2. Hardware Architecture
 
-All part numbers, addresses, pins, and rates below are taken from the source
-(`Esp32 Programs/Esp32_sensor_bridge/Esp32_sensor_bridge.ino`, the Heltec
-sketches, the Python controllers) and the branch wiring reference
-(`README.md` on `Controls`/`Raspi`). Where the wiring reference and the firmware
-disagree, **the firmware value is authoritative** and the conflict is called out
-in [§2.5](#25-documentation-vs-firmware-discrepancies).
+The wiring below reflects the **current physical harness** (I²C on GPIO 23/32,
+direct-PWM canard servos, and a wired ESP32 ↔ Raspberry Pi 5 UART link). Where
+older firmware or the historical branch wiring reference disagrees with this
+harness, the conflict is called out in
+[§2.5](#25-documentation-vs-firmware-discrepancies) — reconcile against the
+sketch actually flashed before flight.
 
 ### 2.1 Components
 
-| Role | Part | Interface | Address / rate (from code) |
-|------|------|-----------|----------------------------|
+| Role | Part | Interface | Address / pins / rate |
+|------|------|-----------|------------------------|
 | Flight MCU / sensor bridge | **ESP32**, board `NodeMCU-32S` | — | USB serial @ **115200** to host |
-| IMU (accel + gyro) | **MPU6050** (Adafruit driver) | I²C | **`0x69`** in firmware `MPU6050_ADDR` ¹; ±16 g accel, ±500 °/s gyro, 21 Hz DLPF; sampled @ **20 Hz** |
-| Barometric altimeter | **BMP585** (Adafruit `BMP5xx`) | I²C | `BMP5XX_DEFAULT_ADDRESS` (**`0x46`** per code comment) ¹; 4× pressure OSR, IIR coeff 3; sampled @ **10 Hz** |
-| GPS | **Adafruit Ultimate GPS V3** | UART (ESP32 `Serial2`) | **9600** baud, NMEA on GPIO16/17 |
-| Servo/PWM driver | **PCA9685** 16-ch PWM | I²C | **`0x40`**, **50 Hz** servo frequency |
-| Roll actuators | **2 × canard servos** (wiring ref names *BMS-127WV+*) | PWM ESP32 GPIO | GPIO Pins **25 & 26**; 500–2400 µs = 0–180°; neutral 90°; ±15° max deflection |
+| IMU (accel + gyro) | **MPU6050** (Adafruit driver) | I²C (SDA GPIO23 / SCL GPIO32) | **AD0 → GND** (nominal `0x68`) ¹; ±16 g accel, ±500 °/s gyro, 21 Hz DLPF; sampled @ **20 Hz** |
+| Barometric altimeter | **BMP585** (Adafruit `BMP5xx`) | I²C (SDA GPIO23 / SCL GPIO32) | `BMP5XX_DEFAULT_ADDRESS` (**`0x46`** per code comment) ¹; 4× pressure OSR, IIR coeff 3; sampled @ **10 Hz** |
+| GPS | **Adafruit Ultimate GPS V3** | UART (ESP32 `Serial2`) | **9600** baud, NMEA; GPS TX → GPIO16, GPS RX → GPIO17; powered from ESP32 3V3 |
+| Roll actuators | **2 × canard servos** (wiring ref names *BMS-127WV+*) | Direct ESP32 PWM | **Canard 1 → GPIO26, Canard 2 → GPIO25**; neutral 90°; ±15° max deflection |
+| Onboard computer | **Raspberry Pi 5** | UART to ESP32 | Pi GPIO14 (TX) → ESP32 **GPIO27** (RX); Pi GPIO15 (RX) ← ESP32 **GPIO33** (TX); common GND required |
 | Telemetry radio (optional) | **Heltec WiFi LoRa 32 V4** (Semtech **SX1262**) | SPI + LoRa | 915 MHz, SF7, BW 125 kHz, CR 4/5, +14 dBm, 2 Hz |
-| Onboard computer (Raspi branch) | **Raspberry Pi 5** | CSI / USB | RASPI GPIO |
 | Ground station | Laptop running the Python stack | USB serial + UDP | — |
 
-¹ The wiring reference documents the MPU6050 at `0x68` and the BMP585 at `0x47`
-(and elsewhere `0x46`). These do **not** match the firmware — see
-[§2.5](#25-documentation-vs-firmware-discrepancies). Confirm both with an I²C
-scanner before flight.
+¹ With AD0 physically tied to GND the MPU6050 should respond at `0x68`, but the
+`Controls`-branch firmware historically defined `MPU6050_ADDR = 0x69` with the
+comment *"AD0 reads high on this board despite being wired to GND."* The old
+wiring reference also listed the BMP585 at `0x47` in places. Confirm both
+addresses with an I²C scanner on the current harness before flight.
+
+> **PCA9685 removed from the harness.** Earlier revisions drove the canards
+> through a PCA9685 16-channel PWM driver (I²C `0x40`, channels 12/13). The
+> current wiring drives both servos **directly from ESP32 GPIO 25/26** and the
+> PCA9685 is no longer part of the signal chain. If the flashed sketch still
+> initializes a PCA9685, it does not match this harness — see
+> [§2.5](#25-documentation-vs-firmware-discrepancies).
 
 ### 2.2 Buses and Wiring
 
-Per the firmware header and the branch wiring reference, the ESP32 is the hub:
+Current harness, ESP32 as the hub:
 
 ```text
 BMP585 ──┐
-          ├── I²C (SDA GPIO21 / SCL GPIO22) ──► ESP32 ──USB serial 115200──► Laptop
-MPU6050 ─┘                                       │
-PCA9685 ─────────── I²C (GPIO21/22) ─────────────┤
-                                                  ├── UART2 (RX GPIO16 / TX GPIO17, 9600) ──► GPS V3
-                                                  └── PCA9685 ch12 / ch13 ──► Canard servos ×2
-                                                                                 ↑
-                                                                    Separate servo power rail
+          ├── I²C (SDA GPIO23 / SCL GPIO32) ──► ESP32 ──USB serial 115200──► Laptop
+MPU6050 ─┘   (MPU AD0 → GND)                     │
+                                                  ├── UART2 (RX GPIO16 ◄─ GPS TX,
+                                                  │          TX GPIO17 ─► GPS RX, 9600)
+                                                  ├── GPIO26 ─► Canard 1 servo PWM
+                                                  ├── GPIO25 ─► Canard 2 servo PWM
+                                                  └── UART (RX GPIO27 ◄─ Pi GPIO14 TX,
+                                                            TX GPIO33 ─► Pi GPIO15 RX)
+                                                                 Raspberry Pi 5
+                                                            (common GND with ESP32)
 ```
 
-- **I²C bus (shared):** MPU6050, BMP585, and PCA9685 all sit on `SDA = GPIO21`,
-  `SCL = GPIO22` (`Wire.begin(21, 22)`), with unique addresses.
-- **GPS:** UART on `Serial2`, `GPS_RX_PIN = 16`, `GPS_TX_PIN = 17`, 9600 baud;
-  raw NMEA is forwarded to the host.
-- **Actuators:** PCA9685 channels 12 and 13 drive the two mirrored canards.
-- **Host link:** The **implemented** control path is **USB serial to a laptop**
-  running `GPSReader.py`, *not* a UART link to the Pi (see [§2.5](#25-documentation-vs-firmware-discrepancies)).
+Pin-by-pin:
+
+| Signal | From | To |
+|--------|------|-----|
+| GPS VIN | ESP32 **3V3** | GPS VIN |
+| GPS GND | ESP32 GND | GPS GND |
+| GPS TX | GPS | ESP32 **GPIO16** (Serial2 RX) |
+| GPS RX | GPS | ESP32 **GPIO17** (Serial2 TX) |
+| I²C SDA (shared) | MPU6050 + BMP585 SDA | ESP32 **GPIO23** |
+| I²C SCL (shared) | MPU6050 + BMP585 SCL | ESP32 **GPIO32** |
+| MPU6050 AD0 | MPU6050 | ESP32 GND |
+| Canard 1 servo PWM | ESP32 **GPIO26** | Servo 1 signal |
+| Canard 2 servo PWM | ESP32 **GPIO25** | Servo 2 signal |
+| Pi TX → ESP32 RX | Pi **GPIO14** | ESP32 **GPIO27** |
+| Pi RX ← ESP32 TX | Pi **GPIO15** | ESP32 **GPIO33** |
+| Pi GND | Pi | ESP32 GND (**common ground required**) |
+
+- **I²C bus (shared):** MPU6050 and BMP585 share `SDA = GPIO23`,
+  `SCL = GPIO32`, with unique addresses.
+- **GPS:** UART on `Serial2` (GPIO16/17), 9600 baud; raw NMEA is forwarded to
+  the host.
+- **Actuators:** the two mirrored canards are driven by **direct ESP32 PWM** on
+  GPIO26 (canard 1) and GPIO25 (canard 2). No external PWM driver.
+- **Pi 5 link:** a dedicated UART now physically connects the ESP32
+  (GPIO27 RX / GPIO33 TX) to the Pi's GPIO14/15, with grounds commoned. Verify
+  which sketch/host program actually uses this link — the `Controls`-branch
+  bridge historically streamed over **USB serial to a laptop**
+  ([§2.5](#25-documentation-vs-firmware-discrepancies)).
 - **Telemetry radio (separate board):** The Heltec V4 pinout is SPI
   (`SCK 9 / MISO 11 / MOSI 10 / NSS 8`), `DIO1 14`, `RST 12`, `BUSY 13`, plus
   RF front-end enable on `GPIO2`. It is an independent link, not wired into the
@@ -124,29 +155,29 @@ PCA9685 ─────────── I²C (GPIO21/22) ───────
 
 ### 2.3 Power System
 
-From the branch wiring reference `Power Summary`:
-
 | Component | Voltage | Source |
 |-----------|---------|--------|
 | ESP32 | 5 V | USB or 5 V regulator |
-| Raspberry Pi 5 | 5 V | USB-C PD or 5V-5A Battery|
+| Raspberry Pi 5 | 5 V | USB-C PD or 5V-5A battery |
 | GPS V3 / BMP585 / MPU6050 | 3.3 V | ESP32 `3V3` pin |
-| Canard servos | 7.4 V 2S LiPo with a 2200 μF — *the wiring reference gives both; reconcile before flight* | Dedicated rail, **never** the ESP32 |
+| Canard servos | 7.4 V 2S LiPo with a 2200 μF bulk cap — *the wiring reference also mentions a 5 V BEC; reconcile before flight* | Dedicated rail, **never** the ESP32 |
 
-- Sensors run off the ESP32's 3.3 V regulator.
+- Sensors and the GPS run off the ESP32's onboard 3.3 V regulator (AMS1117).
+  Note this regulator has limited headroom with GPS + BMP585 + MPU6050 all on
+  the 3V3 pin; watch for brownouts under load and consider a dedicated 3.3 V
+  buck for the sensor rail.
 - Servos must be powered from a **dedicated rail** (a 5 V BEC rated ≥5 A per the
-  doc, 8–10 A recommended; or a 7.4 V 2S LiPo). The wiring
-  reference is internally inconsistent about which — verify your servo voltage
-  rating (2S is 8.4 V fully charged) before connecting.
+  doc, 8–10 A recommended; or a 7.4 V 2S LiPo). The wiring reference is
+  internally inconsistent about which — verify your servo voltage rating (2S is
+  8.4 V fully charged) before connecting.
 - **All grounds must be common:** ESP32, servo power rail, sensors, GPS, and Pi.
+  The Pi ↔ ESP32 ground link is explicitly part of the harness (see §2.2).
 
 ### 2.4 Wiring Diagram / Schematic (placeholder)
 
-> **No schematic or wiring image exists in the repository yet.** The only
-> connection documentation is the ASCII/table wiring reference on the
-> `Controls`, `Raspi`, and `Meshtastic-Programs` branches (and it contains
-> unresolved contradictions — see below). A proper KiCad/schematic capture or a
-> labeled wiring photo should be added here:
+> **No schematic or wiring image exists in the repository yet.** The pin table
+> in §2.2 above is the current authoritative connection list. A proper
+> KiCad/schematic capture or a labeled wiring photo should be added here:
 >
 > ```
 > docs/wiring-diagram.png   <-- TODO: add schematic / harness diagram
@@ -154,17 +185,19 @@ From the branch wiring reference `Power Summary`:
 
 ### 2.5 Documentation vs. firmware discrepancies
 
-These are real, unresolved conflicts between the branch wiring reference and the
-code that actually runs. **Do not treat the wiring tables as authoritative until
-reconciled against hardware:**
+The harness in §2.2 is the **current physical wiring**. The `Controls`-branch
+firmware and the older branch wiring reference were written against earlier
+revisions and may not match it. **Verify the flashed sketch against this table
+before flight:**
 
-| Topic | Wiring reference says | Firmware actually does |
-|-------|-----------------------|------------------------|
-| Actuators | **4 servos** on ESP32 GPIO **13/14/25/26**, direct PWM @ **250 Hz**, 1000–2000 µs, neutral 1520 µs | **2 canards** via **PCA9685** (I²C `0x40`) on channels **12/13** @ **50 Hz**, 500–2400 µs, neutral 90° |
-| PCA9685 channels | A later section maps servos to channels **0–3** | Firmware uses channels **12 & 13** |
-| MPU6050 address | `0x68` (AD0→GND) | `0x69` (comment: "AD0 reads high on this board despite being wired to GND") |
-| BMP585 address | `0x47` default (also `0x46` on Raspi/Meshtastic) | `BMP5XX_DEFAULT_ADDRESS`, commented `0x46`; error string separately mentions `0x47` |
-| ESP32 ↔ Pi 5 UART | UART1 on GPIO 2/4 @ 115200 to a Raspberry Pi 5 | **Not implemented** — the flashed bridge streams everything over **USB serial** to a laptop |
+| Topic | Current harness (§2.2) | Older firmware / wiring reference |
+|-------|------------------------|-----------------------------------|
+| I²C pins | SDA **GPIO23** / SCL **GPIO32** | Firmware: `Wire.begin(21, 22)` |
+| Actuators | **2 canards, direct ESP32 PWM** on GPIO26 (canard 1) / GPIO25 (canard 2) | Firmware: 2 canards via **PCA9685** (I²C `0x40`) ch 12/13 @ 50 Hz; old wiring ref: 4 servos on GPIO 13/14/25/26 @ 250 Hz |
+| PCA9685 | **Not in the harness** | Firmware initializes it; old wiring ref maps servos to ch 0–3 in one section, ch 12/13 in the firmware |
+| MPU6050 address | AD0 → GND (nominal **`0x68`**) | Firmware: `0x69` (comment: "AD0 reads high on this board despite being wired to GND") — rescan on the current board |
+| BMP585 address | `0x46` (code comment) | Old wiring ref: `0x47` in places; firmware error string separately mentions `0x47` |
+| ESP32 ↔ Pi 5 UART | **Physically wired**: Pi GPIO14/15 ↔ ESP32 GPIO27/33, common GND | Firmware: link **not implemented** — the flashed bridge streams over USB serial to a laptop; old wiring ref described UART1 on GPIO 2/4 |
 
 ---
 
@@ -194,13 +227,18 @@ UDP**, not a self-contained onboard controller:
   UDP `127.0.0.1:5761`. It relays inbound `ROLL,<deg>` commands from UDP
   `5760` straight to the ESP32 over the serial port it already holds.
 - A controller listens on 5761, computes a deflection, and sends `ROLL,<deg>`
-  to 5760. The ESP32 applies it to both canards via `setCanards()`.
+  to 5760. The ESP32 applies the same signed deflection to both canards.
+- **Pi 5 UART:** the ESP32 ↔ Pi UART link (ESP32 GPIO27/33 ↔ Pi GPIO14/15) is
+  now **physically wired** (§2.2), but the `Controls`-branch software path
+  above still runs over USB serial to a laptop. Software support for the Pi
+  link (on both the ESP32 sketch and a Pi-side reader) must be confirmed or
+  added before it can replace the USB path.
 
 ### 3.2 Firmware / module reference
 
 | File (branch) | Runs on | Responsibility |
 |---------------|---------|----------------|
-| `Esp32 Programs/Esp32_sensor_bridge/Esp32_sensor_bridge.ino` (Controls) | ESP32 | Reads MPU6050 + BMP585 (I²C) and GPS (UART2); streams `$IMU`/`$ALT`/NMEA over USB; parses `ROLL,<deg>` and drives canards via PCA9685. Zeroes ground pressure at boot (20-sample average). |
+| `Esp32 Programs/Esp32_sensor_bridge/Esp32_sensor_bridge.ino` (Controls) | ESP32 | Reads MPU6050 + BMP585 (I²C) and GPS (UART2); streams `$IMU`/`$ALT`/NMEA over USB; parses `ROLL,<deg>` and drives the canards. Zeroes ground pressure at boot (20-sample average). **Note:** the checked-in version drives the canards via PCA9685 and uses I²C on GPIO21/22 — it predates the direct-PWM / GPIO23-32 harness in §2.2. |
 | `GPSReader.py` (Controls/Raspi) | Laptop | Auto-detects the ESP32 COM port; parses `$IMU`/`$ALT`/NMEA; logs to `logs/flight_*.db` (SQLite) and auto-exports `.xlsx`; UDP telemetry re-broadcast + command relay. |
 | `Controls/Roll Control/BasicRollControl.py` (Controls) | Laptop | **Flight-intent** roll controller: Kalman-filtered roll rate, multi-sensor velocity fusion, velocity-scheduled gain, altitude/tilt/staleness safety gate. |
 | `Controls/Roll Control/GroundRollControlTest.py` (Controls) | Laptop | **Bench/ground** controller: aggressive fixed gains, ±15° authority, roll-rate + tilt terms. Explicitly **bypasses altitude safety — not a flight controller.** |
@@ -232,6 +270,9 @@ tilt estimated from the accelerometer (valid only for slow/ground motion).
 
 **ESP32 `setCanards()`:** clamps to ±15°, applies the same signed deflection to
 both canards around 90° neutral (plus per-canard trim constants, currently 0).
+In the current harness the outputs are direct PWM on GPIO26/25 (§2.2); the
+checked-in sketch still targets PCA9685 channels
+([§2.5](#25-documentation-vs-firmware-discrepancies)).
 
 ### 3.4 Arming / safety state logic
 
@@ -260,12 +301,15 @@ firmware is Arduino sketches and the host code is plain Python scripts.
 
 - **Board:** `NodeMCU-32S` (ESP32) in the Arduino IDE / `arduino-cli`.
 - **Libraries** (Library Manager, per the sketch header): Adafruit MPU6050,
-  Adafruit BMP5xx, Adafruit PWM Servo Driver Library, Adafruit Unified Sensor.
+  Adafruit BMP5xx, Adafruit Unified Sensor. (The Adafruit PWM Servo Driver
+  Library was required by the PCA9685-era sketch; a direct-PWM build will use
+  `ESP32Servo` or LEDC instead — match the sketch you flash.)
 - Open `Esp32 Programs/Esp32_sensor_bridge/Esp32_sensor_bridge.ino`, select the
   board and port, and Upload.
-- **Board-specific tuning noted in code:** `pwm.setOscillatorFrequency(27000000)`
-  is set for clone PCA9685 boards (use `25000000` for genuine Adafruit); adjust
-  if servo angles are wrong.
+- **Verify pins against §2.2 before flashing:** the checked-in sketch predates
+  the current harness (I²C on 21/22, PCA9685 actuation). Update `Wire.begin()`
+  to (23, 32) and the servo output path to direct PWM on GPIO26/25 — or rewire —
+  before running the control loop.
 
 ### 4.2 Heltec V4 LoRa telemetry (`HeltecV4Telemetry*/…ino`)
 
@@ -337,7 +381,7 @@ servos.
 | `Communication/` | Heltec LoRa sketches + `heltec_link_test.py` + `HELTEC_V4_TELEMETRY.md`; Meshtastic `Sender.py`/`Reciever.py`. |
 | `Camera/` (Raspi) | `camera_capture.py` + camera README. |
 | `logs/` | Captured session `.db`/`.xlsx` files. |
-| `README.md` (branch) | Wiring reference (see [§2.5](#25-documentation-vs-firmware-discrepancies) for its known conflicts with the firmware). |
+| `README.md` (branch) | Historical wiring reference — superseded by §2.2 of this document; see [§2.5](#25-documentation-vs-firmware-discrepancies) for its known conflicts. |
 
 ---
 
@@ -367,9 +411,11 @@ servos.
 - **Ground testing:** `GroundRollControlTest.py` uses **aggressive gains and the
   full ±15° deflection and bypasses altitude safety.** Bench-test with the
   airframe restrained and clear of people; it is not a flight controller.
-- **Verify addresses before flight:** the firmware and wiring docs disagree on
-  I²C addresses ([§2.5](#25-documentation-vs-firmware-discrepancies)). Confirm
-  MPU6050 and BMP585 with an I²C scanner on the actual hardware.
+- **Verify pins and addresses before flight:** the checked-in firmware and the
+  current harness disagree on I²C pins, actuator wiring, and possibly I²C
+  addresses ([§2.5](#25-documentation-vs-firmware-discrepancies)). Confirm the
+  MPU6050 and BMP585 with an I²C scanner on GPIO23/32 and sweep both servos on
+  GPIO26/25 before installing the bay.
 
 ---
 
@@ -386,12 +432,16 @@ Grounded in the current code and comments:
 - **No flight validation in the repo.** The controllers are labeled "basic" and
   "ground test"; session logs exist under `logs/`, but there is **no evidence of
   a validated powered flight**, and no test report characterizing performance.
-- **Wiring documentation contradicts the firmware** on actuator count, PWM
-  driver/channels, PWM frequency, I²C addresses, and the host link
-  ([§2.5](#25-documentation-vs-firmware-discrepancies)). Unresolved.
-- **Pi 5 UART link is documented but not implemented.** The flashed bridge talks
-  to a **laptop over USB**, not to the Pi over UART. The `Raspi` branch adds a
-  camera and copies of the programs but no ESP32↔Pi bridge code.
+- **Checked-in firmware lags the current harness.** The harness now uses I²C on
+  GPIO23/32, direct servo PWM on GPIO26/25 (no PCA9685), and a wired ESP32↔Pi
+  UART (GPIO27/33 ↔ Pi GPIO14/15) — the `Controls`-branch sketch still
+  initializes I²C on 21/22 and drives a PCA9685
+  ([§2.5](#25-documentation-vs-firmware-discrepancies)). Update and re-verify
+  before flight.
+- **Pi 5 UART link is wired but its software path is unconfirmed.** The
+  physical UART now exists (§2.2), but the checked-in bridge streams to a
+  **laptop over USB**; ESP32-side and Pi-side software for the UART link must
+  be confirmed or written.
 - **LoRa telemetry sends placeholder data.** `HeltecV4TelemetryTransmitter.ino`'s
   `fillSensorData()` hardcodes example altitude/battery/temp/GPS values —
   *"Replace these example values with real sensor reads."* It is not yet wired to
@@ -399,8 +449,7 @@ Grounded in the current code and comments:
 - **Meshtastic scripts are experiments.** `Sender.py` transmits placeholder joke
   strings; `Reciever.py`'s `PORT` is unset (`"xxxx"`).
 - **Uncalibrated actuator trims.** `CANARD1_TRIM` / `CANARD2_TRIM` are `0.0`
-  with a "tune until neutral" comment; PCA9685 oscillator is set for clone
-  boards (27 MHz).
+  with a "tune until neutral" comment.
 - **Gyro-unit assumptions.** Comments disagree on whether gyro is logged in
   rad/s or deg/s; the controllers default to `rad/s` and assume `gyro_z` is the
   roll axis for the current wiring. Confirm on hardware.
