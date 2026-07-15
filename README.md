@@ -85,9 +85,9 @@ in [§2.5](#25-documentation-vs-firmware-discrepancies).
 | Barometric altimeter | **BMP585** (Adafruit `BMP5xx`) | I²C | `BMP5XX_DEFAULT_ADDRESS` (**`0x46`** per code comment) ¹; 4× pressure OSR, IIR coeff 3; sampled @ **10 Hz** |
 | GPS | **Adafruit Ultimate GPS V3** | UART (ESP32 `Serial2`) | **9600** baud, NMEA on GPIO16/17 |
 | Servo/PWM driver | **PCA9685** 16-ch PWM | I²C | **`0x40`**, **50 Hz** servo frequency |
-| Roll actuators | **2 × canard servos** (wiring ref names *BMS-127WV+*) | PWM via PCA9685 | Channels **12 & 13**; 500–2400 µs = 0–180°; neutral 90°; ±15° max deflection |
+| Roll actuators | **2 × canard servos** (wiring ref names *BMS-127WV+*) | PWM ESP32 GPIO | GPIO Pins **25 & 26**; 500–2400 µs = 0–180°; neutral 90°; ±15° max deflection |
 | Telemetry radio (optional) | **Heltec WiFi LoRa 32 V4** (Semtech **SX1262**) | SPI + LoRa | 915 MHz, SF7, BW 125 kHz, CR 4/5, +14 dBm, 2 Hz |
-| Onboard computer (Raspi branch) | **Raspberry Pi 5** + **Camera Module 3** (`imx708`) | CSI / USB | 1080p30 H.264, software-encoded |
+| Onboard computer (Raspi branch) | **Raspberry Pi 5** | CSI / USB | RASPI GPIO |
 | Ground station | Laptop running the Python stack | USB serial + UDP | — |
 
 ¹ The wiring reference documents the MPU6050 at `0x68` and the BMP585 at `0x47`
@@ -129,13 +129,13 @@ From the branch wiring reference `Power Summary`:
 | Component | Voltage | Source |
 |-----------|---------|--------|
 | ESP32 | 5 V | USB or 5 V regulator |
-| Raspberry Pi 5 | 5 V | USB-C PD |
+| Raspberry Pi 5 | 5 V | USB-C PD or 5V-5A Battery|
 | GPS V3 / BMP585 / MPU6050 | 3.3 V | ESP32 `3V3` pin |
-| Canard servos | 5 V (BEC) **or** 7.4 V 2S LiPo (PCA9685 V+) — *the wiring reference gives both; reconcile before flight* | Dedicated rail, **never** the ESP32 |
+| Canard servos | 7.4 V 2S LiPo with a 2200 μF — *the wiring reference gives both; reconcile before flight* | Dedicated rail, **never** the ESP32 |
 
 - Sensors run off the ESP32's 3.3 V regulator.
 - Servos must be powered from a **dedicated rail** (a 5 V BEC rated ≥5 A per the
-  doc, 8–10 A recommended; or a 7.4 V 2S LiPo into the PCA9685 `V+`). The wiring
+  doc, 8–10 A recommended; or a 7.4 V 2S LiPo). The wiring
   reference is internally inconsistent about which — verify your servo voltage
   rating (2S is 8.4 V fully charged) before connecting.
 - **All grounds must be common:** ESP32, servo power rail, sensors, GPS, and Pi.
