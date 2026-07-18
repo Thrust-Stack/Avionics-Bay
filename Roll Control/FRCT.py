@@ -123,7 +123,9 @@ def init_db(path):
             roll_rate        REAL    NOT NULL,
             roll_angle_deg   REAL,
             angle_setpoint   REAL,
-            fin_command      REAL    NOT NULL
+            fin_command      REAL    NOT NULL,
+            canard1_deg      REAL    NOT NULL,
+            canard2_deg      REAL    NOT NULL
         )
     """)
     conn.commit()
@@ -426,12 +428,18 @@ def main():
             if esp32:
                 send_command_to_esp32(esp32, fin_command)
 
+            # Differential deflection, matching the ESP32's setCanards(): canard 1
+            # takes +fin_command, canard 2 takes -fin_command (deg from neutral).
+            canard1_deg = fin_command
+            canard2_deg = -fin_command
+
             alt_str = f"{snapshot.altitude_m:6.1f}" if snapshot.altitude_m is not None else "  ---"
             print(
                 f"{state:<13} [{'LIVE' if fresh else 'STALE'}] "
                 f"phase={phase or '-':<9} "
                 f"rate={roll_rate:7.2f}  angle={roll_angle:7.2f}  "
-                f"alt={alt_str}  cmd={fin_command:6.2f}",
+                f"alt={alt_str}  cmd={fin_command:6.2f}  "
+                f"canard1={canard1_deg:6.2f}  canard2={canard2_deg:6.2f}",
                 end="\r",
                 flush=True,
             )
@@ -439,12 +447,12 @@ def main():
             conn.execute(
                 "INSERT INTO roll_control "
                 "(timestamp, state, phase, fresh, altitude_m, roll_rate, "
-                " roll_angle_deg, angle_setpoint, fin_command) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " roll_angle_deg, angle_setpoint, fin_command, canard1_deg, canard2_deg) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (now(), state, phase, int(fresh), snapshot.altitude_m, roll_rate,
                  roll_angle if state in (STATE_ROLL_TEST, STATE_POST_TEST) else None,
                  roll_test.setpoint if roll_test is not None else None,
-                 fin_command),
+                 fin_command, canard1_deg, canard2_deg),
             )
             conn.commit()
 
