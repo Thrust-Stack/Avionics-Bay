@@ -2,8 +2,9 @@
  * Avionics Sensor Bridge + Roll Control -- ESP32
  *
  * Reads GPS on UART2, MPU9250/6500 and BMP585 on I2C,
- * forwards all sensor data to Raspberry Pi over UART1 (GPIO 33 TX / GPIO 27 RX).
- * Receives ROLL,<angle> commands from the Pi on the same UART1.
+ * forwards all sensor data directly to the Heltec over UART1
+ * (GPIO 19 TX / GPIO 18 RX).
+ * Receives ROLL,<angle> commands from the Heltec on the same UART1.
  * USB Serial (Serial) is debug-only for Arduino IDE Serial Monitor.
  * Actuates two canard servos via ESP32 LEDC PWM on GPIO 26/25.
  *
@@ -22,13 +23,11 @@
  *   IMU FSYNC    -> ESP32 GND      (tie low; do not leave floating)
  *   BMP SDA      -> ESP32 GPIO 23  (shared I2C bus)
  *   BMP SCL      -> ESP32 GPIO 32  (shared I2C bus)
- *   NOTE: GPIO 18/19/21/22 are damaged on this board (verified by driving
- *   them HIGH with no load: they cannot reach 3.3V). Do not use them.
  *   Canard 1     -> ESP32 GPIO 26
  *   Canard 2     -> ESP32 GPIO 25
- *   Pi GPIO14    -> ESP32 GPIO 27  (Pi TX -> ESP32 RX)
- *   Pi GPIO15    -> ESP32 GPIO 33  (Pi RX -> ESP32 TX)
- *   Pi GND       -> ESP32 GND      (common ground -- required)
+ *   Heltec GPIO44 (U0RXD) <- ESP32 GPIO 19  (ESP32 TX -> Heltec RX)
+ *   Heltec GPIO43 (U0TXD) -> ESP32 GPIO 18  (Heltec TX -> ESP32 RX)
+ *   Heltec GND             -> ESP32 GND      (common ground -- required)
  *
  * Install libraries in Arduino IDE (Tools -> Manage Libraries):
  *   - FastIMU            (supports MPU9250 AND MPU6500 clones)
@@ -80,13 +79,12 @@ const unsigned long ALT_INTERVAL = 100;  // 100ms = 10Hz
 #define NEUTRAL_ANGLE   90.0f  // resting angle when no command
 #define MAX_DEFLECTION  15.0f  // matches GroundRollControlTest.py clamp
 
-// -- Pi UART (Serial1 on GPIO 33 TX / 27 RX) ----------------------
-#define PI_RX_PIN  27
-#define PI_TX_PIN  33
-#define PI_BAUD    115200
+// -- Heltec UART (Serial1 on GPIO 19 TX / 18 RX) ------------------
+#define HELTEC_RX_PIN  18
+#define HELTEC_TX_PIN  19
+#define HELTEC_BAUD    115200
 
 // -- I2C bus (SDA GPIO 23 / SCL GPIO 32) --------------------------
-// GPIO 18/19/21/22 are damaged on this board -- do not use.
 #define I2C_SDA_PIN  23
 #define I2C_SCL_PIN  32
 
@@ -101,7 +99,7 @@ const unsigned long ALT_INTERVAL = 100;  // 100ms = 10Hz
 
 // -- Buffers ------------------------------------------------------
 String gpsBuffer = "";   // GPS NMEA line assembly
-String cmdBuffer = "";   // incoming Pi command line assembly
+String cmdBuffer = "";   // incoming Heltec command line assembly
 
 
 // -- Helpers ------------------------------------------------------
@@ -125,7 +123,7 @@ void setCanards(float fin_command) {
                 fin_command, angle1, angle2);
 }
 
-// Parse and dispatch a complete command line from the laptop
+// Parse and dispatch a complete command line from the Heltec
 void processCommand(const String& line) {
   if (line.startsWith("ROLL,")) {
     float cmd = line.substring(5).toFloat();
@@ -136,12 +134,12 @@ void processCommand(const String& line) {
 
 // -- Setup --------------------------------------------------------
 void setup() {
-  Serial.begin(115200);                                        // USB debug only
-  Serial1.begin(PI_BAUD, SERIAL_8N1, PI_RX_PIN, PI_TX_PIN);    // Pi comms
+  Serial.begin(115200);                                                  // USB debug only
+  Serial1.begin(HELTEC_BAUD, SERIAL_8N1, HELTEC_RX_PIN, HELTEC_TX_PIN);  // Heltec comms
 
   Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
 
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);  // SDA=23, SCL=32 -- GPIO 18/19/21/22 are damaged
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);  // SDA=23, SCL=32
   Wire.setClock(400000);
 
   Serial.println("==========================================");
@@ -208,7 +206,7 @@ void setup() {
 
 // -- Main loop ----------------------------------------------------
 void loop() {
-  // Forward GPS NMEA sentences to Pi
+  // Forward GPS NMEA sentences to the Heltec
   while (Serial2.available()) {
     char c = Serial2.read();
     gpsBuffer += c;
@@ -225,7 +223,7 @@ void loop() {
     imu.getAccel(&accelData);
     imu.getGyro(&gyroData);
 
-    // Convert to the units the Pi pipeline expects: accel m/s^2, gyro rad/s.
+    // Convert to the direct-link packet units: accel m/s^2, gyro rad/s.
     // NOTE: the new IMU's physical orientation may differ from the old MPU6050.
     // The flight controller treats gyro_z as ROLL rate (+z = right roll) --
     // RE-VERIFY that axis mapping and sign on the bench before flight.
@@ -259,7 +257,7 @@ void loop() {
     }
   }
 
-  // Parse ROLL commands from Pi (line-buffered)
+  // Parse ROLL commands from the Heltec (line-buffered)
   while (Serial1.available()) {
     char c = Serial1.read();
     if (c == '\n') {
