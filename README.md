@@ -9,18 +9,19 @@ Complete pin assignments for the avionics bay.
 ## System Overview
 
 ```
-BMP585 ──────┐
-              ├── I2C (GPIO 23/32) ──► ESP32 ──── UART1 (GPIO 33/27) ──► Pi 5
-MPU9250/6500 ┘                          │
-                                     ├── UART2 (GPIO 16/17) ──► GPS
-GPS V3 ─────────────────────────────┘
-                                     ├── GPIO 13 ──► Servo 1
-                                     ├── GPIO 14 ──► Servo 2
-                                     ├── GPIO 25 ──► Servo 3
-                                     └── GPIO 26 ──► Servo 4
-                                                       ↑
-                                               5V BEC (dedicated power)
+GPS V3 ──────(UART2 GPIO 16/17)──┐
+BMP585 ──────(I2C  GPIO 23/32)───┤
+MPU9250/6500 (I2C  GPIO 23/32)───┼──► ESP32 ──(SPI 13/14/27/33)──► microSD (data + actuation log)
+                                  │
+                                  ├──(PWM GPIO 26)──► Canard 1 servo
+                                  └──(PWM GPIO 25)──► Canard 2 servo
+
+Power: 2S LiPo ──► buck step-down ──► ESP32 5V/VIN (+ servo & SD 5V rail)
 ```
+
+> **Standalone architecture:** the ESP32 runs the entire control loop on-board
+> (sensors → control → PWM → SD logging). The Raspberry Pi has been removed;
+> its old UART pins (27/33) are reused for the microSD SPI bus.
 
 ---
 
@@ -32,12 +33,12 @@ GPS V3 ────────────────────────�
 | 17   | UART2 TX       | GPS RX                    | Blue       |
 | 23   | I2C SDA        | BMP585 SDA + IMU SDA      | Yellow     |
 | 32   | I2C SCL        | BMP585 SCL + IMU SCL      | Orange     |
-| 13   | PWM (Servo 1)  | Servo 1 signal            | White      |
-| 14   | PWM (Servo 2)  | Servo 2 signal            | White      |
-| 25   | PWM (Servo 4)  | Servo 3 signal            | White      |
-| 26   | PWM (Servo 3)  | Servo 4 signal            | White      |
-| 27   | UART1 RX       | Pi 5 GPIO 14 (TX)         | Purple     |
-| 33   | UART1 TX       | Pi 5 GPIO 15 (RX)         | Purple     |
+| 13   | SPI MOSI (SD)  | microSD MOSI (DI)         | —          |
+| 14   | SPI SCK (SD)   | microSD SCK (CLK)         | —          |
+| 25   | PWM (Canard 2) | Canard 2 servo signal     | White      |
+| 26   | PWM (Canard 1) | Canard 1 servo signal     | White      |
+| 27   | SPI MISO (SD)  | microSD MISO (DO)         | —          |
+| 33   | SPI CS (SD)    | microSD CS (SS)           | —          |
 | 3.3V | Power out      | GPS VIN, BMP585 VIN, IMU VCC | Red     |
 | GND  | Common ground  | All components + BEC GND  | Black      |
 
@@ -94,23 +95,44 @@ Replaces the original MPU6050. Requires the **FastIMU** library (the
 
 ---
 
-## BMS-127WV+ Servos (×4)
+## MicroSD Card Module (SPI)
 
-| Servo Wire  | Connects To         | Notes                              |
-|-------------|---------------------|------------------------------------|
-| Red (VCC)   | BEC 5V output       | All 4 servos share BEC power rail  |
-| Brown (GND) | Common GND          | Shared with ESP32 and BEC          |
-| Orange (SIG)| ESP32 GPIO (below)  | PWM signal at 250Hz                |
+Logs every sensor sample and canard actuation angle to a CSV on the card.
+Runs on the ESP32 HSPI bus, using pins freed by removing the Pi (27/33) plus
+GPIO 13/14. Separate bus from the I2C sensors — no interference.
 
-| Servo   | Signal Pin | Notes          |
-|---------|------------|----------------|
-| Servo 1 | GPIO 13    | Fin 1 / TVC X+ |
-| Servo 2 | GPIO 14    | Fin 2 / TVC X- |
-| Servo 3 | GPIO 26   | Fin 3 / TVC Y+ |
-| Servo 4 | GPIO 25   | Fin 4 / TVC Y- |
+| SD Module Pin | ESP32 Pin | Notes                                            |
+|---------------|-----------|--------------------------------------------------|
+| VCC           | 5V        | Level-shifted modules (8-pin LVC125) need 5V.    |
+|               |           | Bare 3.3V-only modules: use 3V3 instead.         |
+| GND           | GND       | Common ground                                    |
+| CS  (SS)      | GPIO 33   | Chip select (was Pi RX)                          |
+| SCK (CLK)     | GPIO 14   | SPI clock                                        |
+| MOSI (DI)     | GPIO 13   | Data to card                                     |
+| MISO (DO)     | GPIO 27   | Data from card (was Pi TX)                       |
 
-> PWM: 250Hz, pulse range 1000–2000μs, neutral 1520μs.  
-> ⚠️ Never power servos from ESP32 — use a dedicated BEC.
+> Card must be formatted **FAT32**.
+> Default ESP32 SPI pins (18/19) are unusable — damaged on this board.
+> Firmware init: `SPIClass sdSPI(HSPI); sdSPI.begin(14,27,13,33); SD.begin(33,sdSPI);`
+
+---
+
+## Canard Servos (×2)
+
+| Servo Wire  | Connects To        | Notes                              |
+|-------------|--------------------|------------------------------------|
+| Red (VCC)   | BEC / buck 5V      | Both canards share the 5V rail     |
+| Brown (GND) | Common GND         | Shared with ESP32 and BEC          |
+| Orange (SIG)| ESP32 GPIO (below) | PWM signal at 50Hz                 |
+
+| Servo    | Signal Pin | Notes         |
+|----------|------------|---------------|
+| Canard 1 | GPIO 26    | Roll fin      |
+| Canard 2 | GPIO 25    | Roll fin (differential — opposite of Canard 1) |
+
+> PWM: 50Hz, pulse range 500–2400μs, neutral ≈1450μs (90°) — matches the
+> firmware's `angleToPWM16()`.
+> ⚠️ Never power servos from the ESP32 — use the dedicated 5V BEC/buck.
 
 ---
 
@@ -127,7 +149,10 @@ Replaces the original MPU6050. Requires the **FastIMU** library (the
 
 ---
 
-## Raspberry Pi 5 ↔ ESP32
+## Raspberry Pi 5 ↔ ESP32  (REMOVED — kept for reference)
+
+> The Pi has been removed; the ESP32 now runs standalone and logs to microSD.
+> GPIO 27/33 (below) are reused for the SD SPI bus.
 
 | Pi 5 Pin      | ESP32 Pin | Notes                          |
 |---------------|-----------|--------------------------------|
@@ -144,12 +169,12 @@ Replaces the original MPU6050. Requires the **FastIMU** library (the
 
 | Component     | Voltage | Source              |
 |---------------|---------|---------------------|
-| ESP32         | 5V      | USB or regulator    |
-| Raspberry Pi 5| 5V      | USB-C PD (5A)       |
+| ESP32         | 5V      | 2S LiPo → buck step-down → 5V/VIN |
 | GPS V3        | 3.3V    | ESP32 3.3V pin      |
 | BMP585        | 3.3V    | ESP32 3.3V pin      |
 | MPU9250/6500  | 3.3V    | ESP32 3.3V pin      |
-| 4× Servos     | 5V      | Dedicated 5V BEC    |
+| microSD module| 5V      | 5V rail (buck)      |
+| 2× Canards    | 5V      | Dedicated 5V BEC / buck |
 
 ---
 
