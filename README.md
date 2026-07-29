@@ -9,9 +9,9 @@ Complete pin assignments for the avionics bay.
 ## System Overview
 
 ```
-BMP585 ──┐
-          ├── I2C (GPIO 21/22) ──► ESP32 ──── UART1 (GPIO 2/4) ──► Pi 5
-MPU6050 ─┘                          │
+BMP585 ──────┐
+              ├── I2C (GPIO 23/32) ──► ESP32 ──── UART1 (GPIO 33/27) ──► Pi 5
+MPU9250/6500 ┘                          │
                                      ├── UART2 (GPIO 16/17) ──► GPS
 GPS V3 ─────────────────────────────┘
                                      ├── GPIO 13 ──► Servo 1
@@ -30,15 +30,15 @@ GPS V3 ────────────────────────�
 |------|----------------|---------------------------|------------|
 | 16   | UART2 RX       | GPS TX                    | Green      |
 | 17   | UART2 TX       | GPS RX                    | Blue       |
-| 21   | I2C SDA        | BMP585 SDA + MPU6050 SDA  | Yellow     |
-| 22   | I2C SCL        | BMP585 SCL + MPU6050 SCL  | Orange     |
+| 23   | I2C SDA        | BMP585 SDA + IMU SDA      | Yellow     |
+| 32   | I2C SCL        | BMP585 SCL + IMU SCL      | Orange     |
 | 13   | PWM (Servo 1)  | Servo 1 signal            | White      |
 | 14   | PWM (Servo 2)  | Servo 2 signal            | White      |
 | 25   | PWM (Servo 4)  | Servo 3 signal            | White      |
 | 26   | PWM (Servo 3)  | Servo 4 signal            | White      |
-| 4    | UART1 RX       | Pi 5 GPIO 14 (TX)         | Purple     |
-| 2    | UART1 TX       | Pi 5 GPIO 15 (RX)         | Purple     |
-| 3.3V | Power out      | GPS VIN, BMP585 VIN, MPU VCC | Red     |
+| 27   | UART1 RX       | Pi 5 GPIO 14 (TX)         | Purple     |
+| 33   | UART1 TX       | Pi 5 GPIO 15 (RX)         | Purple     |
+| 3.3V | Power out      | GPS VIN, BMP585 VIN, IMU VCC | Red     |
 | GND  | Common ground  | All components + BEC GND  | Black      |
 
 ---
@@ -62,24 +62,35 @@ GPS V3 ────────────────────────�
 |------------|-----------|-------------------------------|
 | VIN        | 3.3V      |                               |
 | GND        | GND       | Common ground                 |
-| SDA        | GPIO 21   | Shared I2C bus with MPU6050   |
-| SCL        | GPIO 22   | Shared I2C bus with MPU6050   |
+| SDA        | GPIO 23   | Shared I2C bus with IMU       |
+| SCL        | GPIO 32   | Shared I2C bus with IMU       |
 
-> I2C address: 0x47. Shares bus with MPU6050.
+> I2C address: 0x46. Shares bus with the IMU.
 
 ---
 
-## MPU6050 (IMU)
+## MPU9250 / MPU6500 (IMU)
 
-| MPU6050 Pin | ESP32 Pin | Notes                         |
-|-------------|-----------|-------------------------------|
-| VCC         | 3.3V      |                               |
-| GND         | GND       | Common ground                 |
-| SDA         | GPIO 21   | Shared I2C bus with BMP585    |
-| SCL         | GPIO 22   | Shared I2C bus with BMP585    |
-| AD0         | GND       | Sets I2C address to 0x68      |
+Replaces the original MPU6050. Requires the **FastIMU** library (the
+`Adafruit_MPU6050` library rejects a 9250/6500 on its WHO-AM-I check).
+
+| IMU Pin | ESP32 Pin | Notes                                        |
+|---------|-----------|----------------------------------------------|
+| VCC     | 3.3V      |                                              |
+| GND     | GND       | Common ground                                |
+| SDA     | GPIO 23   | Shared I2C bus with BMP585                   |
+| SCL     | GPIO 32   | Shared I2C bus with BMP585                   |
+| EDA     | —         | Aux I2C master bus — leave unconnected       |
+| ECL     | —         | Aux I2C master bus — leave unconnected       |
+| AD0     | GND       | Sets I2C address to 0x68 (tie to 3.3V → 0x69)|
+| NCS     | 3.3V      | Forces I2C mode — do NOT leave floating      |
+| FSYNC   | GND       | Tie low — do NOT leave floating              |
 
 > I2C address: 0x68 (AD0 → GND). Shares bus with BMP585.
+> WHO_AM_I: 0x71 (MPU9250) or 0x70 (MPU6500). If `imu.init()` returns a
+> non-zero error, switch `MPU9250 imu;` to `MPU6500 imu;` in the sketch.
+> The sketch converts FastIMU's g / deg-per-second output to m/s² and rad/s,
+> so the `$IMU` packet and the Pi-side code are unchanged.
 
 ---
 
@@ -120,8 +131,8 @@ GPS V3 ────────────────────────�
 
 | Pi 5 Pin      | ESP32 Pin | Notes                          |
 |---------------|-----------|--------------------------------|
-| GPIO 14 (TX)  | GPIO 4    | Pi sends commands → ESP32      |
-| GPIO 15 (RX)  | GPIO 2    | ESP32 sends sensor data → Pi   |
+| GPIO 14 (TX)  | GPIO 27   | Pi sends commands → ESP32      |
+| GPIO 15 (RX)  | GPIO 33   | ESP32 sends sensor data → Pi   |
 | GND           | GND       | Common ground                  |
 
 > Both Pi 5 and ESP32 use 3.3V logic — direct connection is safe, no level shifter needed.  
@@ -137,19 +148,19 @@ GPS V3 ────────────────────────�
 | Raspberry Pi 5| 5V      | USB-C PD (5A)       |
 | GPS V3        | 3.3V    | ESP32 3.3V pin      |
 | BMP585        | 3.3V    | ESP32 3.3V pin      |
-| MPU6050       | 3.3V    | ESP32 3.3V pin      |
+| MPU9250/6500  | 3.3V    | ESP32 3.3V pin      |
 | 4× Servos     | 5V      | Dedicated 5V BEC    |
 
 ---
 
 ## I2C Address Reference
 
-| Device  | I2C Address | AD0/SDO Pin |
-|---------|-------------|-------------|
-| BMP585  | 0x46        | SDO floating/GND (default) |
-| MPU6050 | 0x68        | AD0 → GND   |
+| Device       | I2C Address | AD0/SDO Pin |
+|--------------|-------------|-------------|
+| BMP585       | 0x46        | SDO floating/GND (default) |
+| MPU9250/6500 | 0x68        | AD0 → GND   |
 
-> Both devices share GPIO 21 (SDA) and GPIO 22 (SCL).  
+> Both devices share GPIO 23 (SDA) and GPIO 32 (SCL).  
 > Addresses are unique so no conflicts on the shared bus.
 
 ---
