@@ -34,6 +34,9 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BMP5xx.h>
 #include <Adafruit_PWMServoDriver.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
 
 // ── GPS config ───────────────────────────────────────────────
 #define GPS_RX_PIN  16
@@ -74,6 +77,11 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(PCA9685_ADDR);
 String gpsBuffer = "";  // GPS NMEA line assembly
 String cmdBuffer = "";  // incoming laptop command line assembly
 
+// ── I2C mutex ────────────────────────────────────────────────
+// PCA9685, MPU6050, and BMP585 share one I2C bus. commandTask and sensorTask
+// both touch it, so every transaction must be serialized through this mutex.
+SemaphoreHandle_t i2cMutex;
+
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -89,8 +97,10 @@ void setCanards(float fin_command) {
   fin_command = constrain(fin_command, -MAX_DEFLECTION, MAX_DEFLECTION);
   float angle1 = NEUTRAL_ANGLE + CANARD1_TRIM + fin_command;
   float angle2 = NEUTRAL_ANGLE + CANARD2_TRIM + fin_command;
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
   pwm.setPWM(CANARD1_CH, 0, angleToPWM(angle1));
   pwm.setPWM(CANARD2_CH, 0, angleToPWM(angle2));
+  xSemaphoreGive(i2cMutex);
   Serial.printf("[ROLL] cmd=%.2f  canard1=%.1f°  canard2=%.1f°\n",
                 fin_command, angle1, angle2);
 }
@@ -100,6 +110,75 @@ void processCommand(const String& line) {
   if (line.startsWith("ROLL,")) {
     float cmd = line.substring(5).toFloat();
     setCanards(cmd);
+  }
+}
+
+
+// ── Tasks ────────────────────────────────────────────────────
+
+// Higher priority: reads Serial and applies ROLL commands with minimal latency.
+void commandTask(void *parameter) {
+  for (;;) {
+    // Parse ROLL commands from the laptop (line-buffered)
+    while (Serial.available()) {
+      char c = Serial.read();
+      if (c == '\n') {
+        cmdBuffer.trim();
+        if (cmdBuffer.length() > 0) {
+          processCommand(cmdBuffer);
+        }
+        cmdBuffer = "";
+      } else {
+        cmdBuffer += c;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+
+// Lower priority: GPS forwarding, IMU at 20Hz, BMP585 altitude at 10Hz.
+void sensorTask(void *parameter) {
+  for (;;) {
+    // Forward GPS NMEA sentences to USB serial
+    while (Serial2.available()) {
+      char c = Serial2.read();
+      gpsBuffer += c;
+      if (c == '\n') {
+        Serial.print(gpsBuffer);
+        gpsBuffer = "";
+      }
+    }
+
+    // IMU at 20Hz
+    if (millis() - lastIMU >= IMU_INTERVAL) {
+      lastIMU = millis();
+      sensors_event_t accel, gyro, temp;
+      xSemaphoreTake(i2cMutex, portMAX_DELAY);
+      mpu.getEvent(&accel, &gyro, &temp);
+      xSemaphoreGive(i2cMutex);
+      Serial.print("$IMU,");
+      Serial.print(accel.acceleration.x, 3); Serial.print(",");
+      Serial.print(accel.acceleration.y, 3); Serial.print(",");
+      Serial.print(accel.acceleration.z, 3); Serial.print(",");
+      Serial.print(gyro.gyro.x, 3);          Serial.print(",");
+      Serial.print(gyro.gyro.y, 3);          Serial.print(",");
+      Serial.println(gyro.gyro.z, 3);
+    }
+
+    // BMP585 altitude at 10Hz
+    if (bmpReady && (millis() - lastALT >= ALT_INTERVAL)) {
+      lastALT = millis();
+      xSemaphoreTake(i2cMutex, portMAX_DELAY);
+      bool ok = bmp585.performReading();
+      xSemaphoreGive(i2cMutex);
+      if (ok) {
+        float agl = 44330.0f * (1.0f - powf(bmp585.pressure / groundPressure, 0.1903f));
+        Serial.print("$ALT,");
+        Serial.println(agl, 2);
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
 }
 
@@ -174,56 +253,15 @@ void setup() {
   Serial.println("[OK] GPS UART initialized");
   Serial.println("==========================================");
   Serial.println();
+
+  i2cMutex = xSemaphoreCreateMutex();
+
+  xTaskCreate(commandTask, "commandTask", 4096, NULL, 2, NULL);
+  xTaskCreate(sensorTask,  "sensorTask",  4096, NULL, 1, NULL);
 }
 
 
 // ── Main loop ────────────────────────────────────────────────
 void loop() {
-  // Forward GPS NMEA sentences to USB serial
-  while (Serial2.available()) {
-    char c = Serial2.read();
-    gpsBuffer += c;
-    if (c == '\n') {
-      Serial.print(gpsBuffer);
-      gpsBuffer = "";
-    }
-  }
-
-  // IMU at 20Hz
-  if (millis() - lastIMU >= IMU_INTERVAL) {
-    lastIMU = millis();
-    sensors_event_t accel, gyro, temp;
-    mpu.getEvent(&accel, &gyro, &temp);
-    Serial.print("$IMU,");
-    Serial.print(accel.acceleration.x, 3); Serial.print(",");
-    Serial.print(accel.acceleration.y, 3); Serial.print(",");
-    Serial.print(accel.acceleration.z, 3); Serial.print(",");
-    Serial.print(gyro.gyro.x, 3);          Serial.print(",");
-    Serial.print(gyro.gyro.y, 3);          Serial.print(",");
-    Serial.println(gyro.gyro.z, 3);
-  }
-
-  // BMP585 altitude at 10Hz
-  if (bmpReady && (millis() - lastALT >= ALT_INTERVAL)) {
-    lastALT = millis();
-    if (bmp585.performReading()) {
-      float agl = 44330.0f * (1.0f - powf(bmp585.pressure / groundPressure, 0.1903f));
-      Serial.print("$ALT,");
-      Serial.println(agl, 2);
-    }
-  }
-
-  // Parse ROLL commands from the laptop (line-buffered)
-  while (Serial.available()) {
-    char c = Serial.read();
-    if (c == '\n') {
-      cmdBuffer.trim();
-      if (cmdBuffer.length() > 0) {
-        processCommand(cmdBuffer);
-      }
-      cmdBuffer = "";
-    } else {
-      cmdBuffer += c;
-    }
-  }
+  vTaskDelay(portMAX_DELAY);
 }
