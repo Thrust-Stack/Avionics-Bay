@@ -96,6 +96,10 @@ Replaces the original MPU6050. Requires the **FastIMU** library (the
 > non-zero error, switch `MPU9250 imu;` to `MPU6500 imu;` in the sketch.
 > The sketch converts FastIMU's g / deg-per-second output to m/s² and rad/s,
 > so the `$IMU` packet format remains unchanged.
+> The installed orientation uses **MPU X** as both the rocket roll axis and
+> vertical-acceleration axis. `$IMU` packets retain raw MPU axis order, so
+> control code uses `gyroX`/`gx` for roll rate and `accelX`/`ax` for vertical
+> acceleration.
 
 ---
 

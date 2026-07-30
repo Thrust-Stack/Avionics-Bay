@@ -113,8 +113,10 @@ void setCanards(float fin_command){
 }
 
 void estimateRotation(float ax, float ay, float az, float &rx, float &ry){
+  // The rocket's vertical/roll axis is MPU X. Treat MPU X as the old
+  // longitudinal reference while preserving the existing two tilt outputs.
   rx = degrees(atan2f(ay, sqrtf(ax * ax + az * az)));
-  ry = degrees(atan2f(-ax, sqrtf(ay * ay + az * az)));
+  ry = degrees(atan2f(-az, sqrtf(ay * ay + ax * ax)));
 }
 
 String nextLogName(const char* prefix){
@@ -204,8 +206,8 @@ void loop(){
       imu.getGyro(&gyroData);
       ax = accelData.accelX; ay = accelData.accelY; az = accelData.accelZ;
       gx = gyroData.gyroX;   gy = gyroData.gyroY;   gz = gyroData.gyroZ;
-      // gz = roll rate (deg/s). +z = right roll -- RE-VERIFY sign on the bench.
-      rawRoll  = gz;
+      // MPU X is the rocket's roll axis. Re-verify the positive sign on the bench.
+      rawRoll  = gx;
       filtRoll = rollFilter.update(rawRoll);
       estimateRotation(ax, ay, az, rotx, roty);
       cmd = clampf(ROLL_RATE_GAIN * (TARGET_ROLL_RATE - filtRoll) - TILT_GAIN * roty,

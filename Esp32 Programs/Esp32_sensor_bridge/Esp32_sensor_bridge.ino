@@ -224,9 +224,9 @@ void loop() {
     imu.getGyro(&gyroData);
 
     // Convert to the direct-link packet units: accel m/s^2, gyro rad/s.
-    // NOTE: the new IMU's physical orientation may differ from the old MPU6050.
-    // The flight controller treats gyro_z as ROLL rate (+z = right roll) --
-    // RE-VERIFY that axis mapping and sign on the bench before flight.
+    // MPU X is both the rocket's vertical-acceleration axis and roll axis:
+    // downstream control uses ax for vertical acceleration and gx for roll rate.
+    // The packet retains raw MPU axis order; re-verify the gx sign on the bench.
     float ax = accelData.accelX * G_TO_MS2;
     float ay = accelData.accelY * G_TO_MS2;
     float az = accelData.accelZ * G_TO_MS2;

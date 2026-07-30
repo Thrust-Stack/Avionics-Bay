@@ -2,7 +2,7 @@
  * FRCT_Firmware -- Flight Roll-Control + Roll-Test, standalone on ESP32.
  *
  * Port of FRCT.py. Sequence:
- *   PRE_TEST   : roll-RATE damping (drive gyro_z -> 0). Count BMP samples > 200 m.
+ *   PRE_TEST   : roll-RATE damping (drive gyro_x -> 0). Count BMP samples > 200 m.
  *   TRIGGER    : after 4 consecutive $ALT samples > 200 m, LATCH (one-time) and
  *                zero the gyro-integrated roll angle.
  *   ROLL_TEST  : 0 -> +90 deg (right) at 180 deg/s, hold 0.2 s, +90 -> 0.
@@ -20,7 +20,7 @@
  * IMPORTANT (flight hardware):
  *   - KP_ANGLE / KD_ANGLE depend on canard authority at airspeed and MUST be
  *     validated in sim/on the bench before flight (same caveat as FRCT.py).
- *   - Re-verify that gyro_z is the ROLL axis and +z = right on THIS IMU/mount.
+ *   - MPU X is the ROLL axis; re-verify its positive direction on the bench.
  *   - SD writes can block ~tens of ms; for max timing margin move logging to
  *     core 0 (FreeRTOS task/queue). This version batches flushes to bound it.
  */
@@ -246,8 +246,8 @@ void loop(){
       imu.getGyro(&gyroData);
       ax = accelData.accelX; ay = accelData.accelY; az = accelData.accelZ;
       gx = gyroData.gyroX;   gy = gyroData.gyroY;   gz = gyroData.gyroZ;
-      // gz = roll rate (deg/s). +z = right roll -- RE-VERIFY sign on the bench.
-      rollRate = gz;
+      // MPU X is the rocket's roll axis. Re-verify the positive sign on the bench.
+      rollRate = gx;
     }
 
     if(state == FAILSAFE_LOCK){
