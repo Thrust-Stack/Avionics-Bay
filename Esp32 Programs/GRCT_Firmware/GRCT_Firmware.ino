@@ -57,11 +57,15 @@
 #define GYRO_PROCESS_VAR     0.1f
 #define GYRO_MEASUREMENT_VAR 4.0f
 
+// FastIMU reports acceleration in g; the log wants m/s^2.
+#define G_TO_MS2 9.80665f
+
 // ---- Timing ----
 #define CONTROL_PERIOD_MS 20    // 50 Hz (GRCT.py used 0.02 s)
 #define BMP_PERIOD_MS     100   // 10 Hz
 #define SD_FLUSH_MS       250
 #define STATUS_PRINT_MS   500
+#define STATUS_HEADER_EVERY 20  // re-print the column header every N rows
 
 // ---- Objects ----
 MPU9250 imu;                 // <-- change to  MPU6500 imu;  if init fails
@@ -78,6 +82,8 @@ float groundPressure = 1013.25f;
 float altitudeM = 0.0f;
 float lastCanard1 = NEUTRAL_ANGLE, lastCanard2 = NEUTRAL_ANGLE;
 unsigned long lastControl = 0, lastBmp = 0, lastFlush = 0, lastStatus = 0;
+unsigned long lineNo = 0;      // one per control sample, shared by SD + serial
+uint16_t statusRows = 0;
 
 // Scalar Kalman filter for roll rate (locally-constant model)
 struct Kalman1D {
@@ -117,6 +123,12 @@ void estimateRotation(float ax, float ay, float az, float &rx, float &ry){
   // longitudinal reference while preserving the existing two tilt outputs.
   rx = degrees(atan2f(ay, sqrtf(ax * ax + az * az)));
   ry = degrees(atan2f(-az, sqrtf(ay * ay + ax * ax)));
+}
+
+void printStatusHeader(){
+  Serial.println();
+  Serial.println("  line     time    gyroX    gyroY    gyroZ  baroAlt   gpsAlt          lon          lat    accX    accY    accZ  kalman    can1    can2");
+  Serial.println("------ -------- -------- -------- -------- -------- -------- ------------ ------------ ------- ------- ------- ------- ------- -------");
 }
 
 String nextLogName(const char* prefix){
@@ -171,16 +183,18 @@ void setup(){
     String fn = nextLogName("GRCT");
     logFile = SD.open(fn.c_str(), FILE_WRITE);
     if(logFile){
-      logFile.println("millis,state,gps_lat,gps_lon,gps_mph,gps_course,alt_m,"
-                      "ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,"
-                      "raw_roll_rate,filt_roll_rate,rot_x,rot_y,fin_cmd,canard1,canard2");
+      logFile.println("line,timestamp_ms,gyro_x_dps,gyro_y_dps,gyro_z_dps,"
+                      "baro_alt_m,gps_alt_m,longitude_deg,latitude_deg,"
+                      "accel_x_ms2,accel_y_ms2,accel_z_ms2,kalman_roll_rate_dps,"
+                      "canard1_deg,canard2_deg");
       logFile.flush();
       sdReady = true;
       Serial.printf("[OK] SD logging to %s\n", fn.c_str());
     } else Serial.println("[ERR] SD open failed");
   }
 
-  Serial.println("Running.");
+  Serial.println(mpuReady ? "Running -- GROUND_TEST_ACTIVE."
+                          : "Running -- STALE_TELEMETRY (no IMU, canards held neutral).");
 }
 
 void loop(){
@@ -196,7 +210,6 @@ void loop(){
   if(nowMs - lastControl >= CONTROL_PERIOD_MS){
     lastControl = nowMs;
 
-    const char* state = mpuReady ? "GROUND_TEST_ACTIVE" : "STALE_TELEMETRY";
     float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0;
     float rawRoll = 0, filtRoll = 0, rotx = 0, roty = 0, cmd = 0;
 
@@ -215,24 +228,29 @@ void loop(){
     }
     setCanards(cmd);   // cmd is 0 when IMU is not ready
 
+    lineNo++;
+    double gpsLon = gps.location.isValid() ? gps.location.lng()      : 0.0;
+    double gpsLat = gps.location.isValid() ? gps.location.lat()      : 0.0;
+    double gpsAlt = gps.altitude.isValid() ? gps.altitude.meters()   : 0.0;
+    float  axMs2 = ax * G_TO_MS2, ayMs2 = ay * G_TO_MS2, azMs2 = az * G_TO_MS2;
+
     if(sdReady && logFile){
-      char line[220];
+      char line[256];
       snprintf(line, sizeof(line),
-        "%lu,%s,%.6f,%.6f,%.2f,%.1f,%.2f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.1f,%.1f\n",
-        nowMs, state,
-        gps.location.isValid() ? gps.location.lat() : 0.0,
-        gps.location.isValid() ? gps.location.lng() : 0.0,
-        gps.speed.isValid()    ? gps.speed.mph()    : 0.0,
-        gps.course.isValid()   ? gps.course.deg()   : 0.0,
-        altitudeM, ax, ay, az, gx, gy, gz,
-        rawRoll, filtRoll, rotx, roty, cmd, lastCanard1, lastCanard2);
+        "%lu,%lu,%.2f,%.2f,%.2f,%.2f,%.2f,%.6f,%.6f,%.3f,%.3f,%.3f,%.2f,%.1f,%.1f\n",
+        lineNo, nowMs, gx, gy, gz, altitudeM, gpsAlt, gpsLon, gpsLat,
+        axMs2, ayMs2, azMs2, filtRoll, lastCanard1, lastCanard2);
       logFile.print(line);
     }
 
     if(nowMs - lastStatus >= STATUS_PRINT_MS){
       lastStatus = nowMs;
-      Serial.printf("%s roll=%.1f filt=%.1f rotY=%.1f cmd=%.2f alt=%.1f\r",
-                    state, rawRoll, filtRoll, roty, cmd, altitudeM);
+      if(statusRows % STATUS_HEADER_EVERY == 0) printStatusHeader();
+      statusRows++;
+      Serial.printf("%6lu %8lu %8.2f %8.2f %8.2f %8.2f %8.2f %12.6f %12.6f "
+                    "%7.3f %7.3f %7.3f %7.2f %7.1f %7.1f\n",
+                    lineNo, nowMs, gx, gy, gz, altitudeM, gpsAlt, gpsLon, gpsLat,
+                    axMs2, ayMs2, azMs2, filtRoll, lastCanard1, lastCanard2);
     }
   }
 
