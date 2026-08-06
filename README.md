@@ -37,12 +37,12 @@ Power: 2S LiPo ──► buck step-down ──► ESP32 5V/VIN (+ servo & SD 5V 
 | 19   | UART1 TX       | Heltec GPIO 44 (U0RXD)    | —          |
 | 23   | I2C SDA        | BMP585 SDA + IMU SDA      | Yellow     |
 | 32   | I2C SCL        | BMP585 SCL + IMU SCL      | Orange     |
-| 13   | SPI MOSI (SD)  | microSD MOSI (DI)         | —          |
-| 14   | SPI SCK (SD)   | microSD SCK (CLK)         | —          |
+| 13   | SPI MOSI (SD)  | ADA254 DI                 | —          |
+| 14   | SPI SCK (SD)   | ADA254 CLK                | —          |
 | 25   | PWM (Canard 2) | Canard 2 servo signal     | White      |
 | 26   | PWM (Canard 1) | Canard 1 servo signal     | White      |
-| 27   | SPI MISO (SD)  | microSD MISO (DO)         | —          |
-| 33   | SPI CS (SD)    | microSD CS (SS)           | —          |
+| 27   | SPI MISO (SD)  | ADA254 DO                 | —          |
+| 33   | SPI CS (SD)    | ADA254 CS                 | —          |
 | 3.3V | Power out      | GPS VIN, BMP585 VIN, IMU VCC | Red     |
 | GND  | Common ground  | All components + BEC GND  | Black      |
 
@@ -103,21 +103,22 @@ Replaces the original MPU6050. Requires the **FastIMU** library (the
 
 ---
 
-## MicroSD Card Module (SPI)
+## Adafruit ADA254 MicroSD Breakout (SPI)
 
 Logs every sensor sample and canard actuation angle to a CSV on the card.
 Runs on the ESP32 HSPI bus on GPIO 13/14/27/33. This is separate from the I2C
-sensors and the direct Heltec UART.
+sensors and the direct Heltec UART. The ADA254 is level-shifted and has an
+onboard regulator, so use its `5V` input from the avionics 5V rail.
 
-| SD Module Pin | ESP32 Pin | Notes                                            |
-|---------------|-----------|--------------------------------------------------|
-| VCC           | 5V        | Level-shifted modules (8-pin LVC125) need 5V.    |
-|               |           | Bare 3.3V-only modules: use 3V3 instead.         |
-| GND           | GND       | Common ground                                    |
-| CS  (SS)      | GPIO 33   | Chip select                                      |
-| SCK (CLK)     | GPIO 14   | SPI clock                                        |
-| MOSI (DI)     | GPIO 13   | Data to card                                     |
-| MISO (DO)     | GPIO 27   | Data from card                                   |
+| ADA254 Pin | ESP32 Pin | Notes                                      |
+|------------|-----------|--------------------------------------------|
+| 5V         | 5V        | Regulator input from the buck/5V rail      |
+| GND        | GND       | Common ground                              |
+| CS         | GPIO 33   | Chip select                                |
+| CLK        | GPIO 14   | SPI clock / ESP32 SCK                      |
+| DI         | GPIO 13   | Data into card / ESP32 MOSI                |
+| DO         | GPIO 27   | Data out of card / ESP32 MISO              |
+| CD         | —         | Optional card-detect pin; leave unconnected |
 
 > Card must be formatted **FAT32**.
 > GPIO 18/19 are reserved for the direct Heltec UART and are not used for SPI.
@@ -196,7 +197,7 @@ The Raspberry Pi 5 is no longer required for this communication path.
 | GPS V3        | 3.3V    | ESP32 3.3V pin      |
 | BMP585        | 3.3V    | ESP32 3.3V pin      |
 | MPU9250/6500  | 3.3V    | ESP32 3.3V pin      |
-| microSD module| 5V      | 5V rail (buck)      |
+| ADA254 microSD| 5V      | 5V rail (buck)      |
 | 2× Canards    | 5V      | Dedicated 5V BEC / buck |
 
 ---

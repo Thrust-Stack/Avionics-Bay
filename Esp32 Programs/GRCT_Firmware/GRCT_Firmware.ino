@@ -9,19 +9,18 @@
  * every sample plus canard angles to microSD (SPI, CSV).
  *
  * Libraries (Arduino IDE -> Manage Libraries):
- *   FastIMU, Adafruit BMP5xx, Adafruit Unified Sensor, TinyGPSPlus.
+ *   Adafruit BMP5xx, Adafruit Unified Sensor, TinyGPSPlus.
  *   (SD, SPI, Wire are built into the ESP32 core.)
  *
  * Wiring (see README.md):
  *   I2C  SDA=23  SCL=32          Canards  1=GPIO26  2=GPIO25
- *   SD   SCK=14 MISO=27 MOSI=13 CS=33     GPS UART2 RX=16 TX=17
+ *   ADA254 SD  CLK=14 DO=27 DI=13 CS=33   GPS UART2 RX=16 TX=17
  *   GPIO 18/19/21/22 are damaged on this board -- unused.
  *
  * Board: NodeMCU-32S.  Card must be FAT32.
  */
 
 #include <Wire.h>
-#include <FastIMU.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BMP5xx.h>
 #include <SPI.h>
@@ -38,10 +37,10 @@
 #define BMP585_ADDR  BMP5XX_DEFAULT_ADDRESS   // 0x46
 #define CANARD1_PIN  26
 #define CANARD2_PIN  25
-#define SD_SCK_PIN   14
-#define SD_MISO_PIN  27
-#define SD_MOSI_PIN  13
-#define SD_CS_PIN    33
+#define SD_SCK_PIN   14  // ADA254 CLK
+#define SD_MISO_PIN  27  // ADA254 DO
+#define SD_MOSI_PIN  13  // ADA254 DI
+#define SD_CS_PIN    33  // ADA254 CS
 
 // ---- Servo PWM ----
 #define SERVO_FREQ_HZ 50
@@ -57,8 +56,24 @@
 #define GYRO_PROCESS_VAR     0.1f
 #define GYRO_MEASUREMENT_VAR 4.0f
 
-// FastIMU reports acceleration in g; the log wants m/s^2.
+// MPU reads are converted to g; the log wants m/s^2.
 #define G_TO_MS2 9.80665f
+
+// ---- MPU6500 registers/scales ----
+#define MPU_WHO_AM_I      0x75
+#define MPU_PWR_MGMT_1    0x6B
+#define MPU_SMPLRT_DIV    0x19
+#define MPU_CONFIG        0x1A
+#define MPU_GYRO_CONFIG   0x1B
+#define MPU_ACCEL_CONFIG  0x1C
+#define MPU_ACCEL_CONFIG2 0x1D
+#define MPU_INT_PIN_CFG   0x37
+#define MPU_INT_ENABLE    0x38
+#define MPU_ACCEL_XOUT_H  0x3B
+#define MPU6500_WHOAMI    0x70
+#define MPU9250_WHOAMI    0x71
+#define MPU_GYRO_LSB_PER_DPS 65.5f    // +/-500 dps
+#define MPU_ACCEL_LSB_PER_G  2048.0f  // +/-16 g
 
 // ---- Timing ----
 #define CONTROL_PERIOD_MS 20    // 50 Hz (GRCT.py used 0.02 s)
@@ -66,12 +81,9 @@
 #define SD_FLUSH_MS       250
 #define STATUS_PRINT_MS   500
 #define STATUS_HEADER_EVERY 20  // re-print the column header every N rows
+#define IMU_MAX_READ_FAILURES 5
 
 // ---- Objects ----
-MPU9250 imu;                 // <-- change to  MPU6500 imu;  if init fails
-calData imuCalib = { 0 };
-AccelData accelData;
-GyroData  gyroData;
 Adafruit_BMP5xx bmp585;
 TinyGPSPlus gps;
 SPIClass sdSPI(HSPI);
@@ -84,6 +96,8 @@ float lastCanard1 = NEUTRAL_ANGLE, lastCanard2 = NEUTRAL_ANGLE;
 unsigned long lastControl = 0, lastBmp = 0, lastFlush = 0, lastStatus = 0;
 unsigned long lineNo = 0;      // one per control sample, shared by SD + serial
 uint16_t statusRows = 0;
+uint8_t imuReadFailures = 0;
+unsigned long lastImuWarn = 0;
 
 // Scalar Kalman filter for roll rate (locally-constant model)
 struct Kalman1D {
@@ -118,6 +132,102 @@ void setCanards(float fin_command){
   ledcWrite(CANARD2_PIN, angleToPWM16(lastCanard2));
 }
 
+bool mpuWrite(uint8_t reg, uint8_t value){
+  Wire.beginTransmission(IMU_ADDRESS);
+  Wire.write(reg);
+  Wire.write(value);
+  return Wire.endTransmission() == 0;
+}
+
+bool mpuReadByte(uint8_t reg, uint8_t &value){
+  Wire.beginTransmission(IMU_ADDRESS);
+  Wire.write(reg);
+  if(Wire.endTransmission(true) != 0) return false;
+  delayMicroseconds(100);
+  if(Wire.requestFrom((uint8_t)IMU_ADDRESS, (uint8_t)1) != 1) return false;
+  value = Wire.read();
+  return true;
+}
+
+bool mpuReadBytes(uint8_t reg, uint8_t *data, uint8_t count){
+  Wire.beginTransmission(IMU_ADDRESS);
+  Wire.write(reg);
+  if(Wire.endTransmission(true) != 0) return false;
+  delayMicroseconds(100);
+  if(Wire.requestFrom((uint8_t)IMU_ADDRESS, count) != count) return false;
+  for(uint8_t i = 0; i < count; i++) data[i] = Wire.read();
+  return true;
+}
+
+bool mpuRead16(uint8_t reg, int16_t &value){
+  uint8_t raw[2];
+  if(!mpuReadBytes(reg, raw, sizeof(raw))) return false;
+  value = (int16_t)((raw[0] << 8) | raw[1]);
+  return true;
+}
+
+void printI2CScan(){
+  int found = 0;
+  Serial.print("[INFO] I2C devices:");
+  for(uint8_t addr = 0x03; addr <= 0x77; addr++){
+    Wire.beginTransmission(addr);
+    if(Wire.endTransmission() == 0){
+      Serial.printf(" 0x%02X", addr);
+      found++;
+    }
+  }
+  if(found == 0) Serial.print(" none");
+  Serial.println();
+}
+
+bool mpuBegin(){
+  uint8_t who = 0;
+  unsigned long deadline = millis() + 5000;
+  while(millis() < deadline){
+    if(mpuReadByte(MPU_WHO_AM_I, who)) break;
+    delay(250);
+  }
+  if(who == 0){
+    Serial.println("[ERR] IMU WHO_AM_I read failed");
+    return false;
+  }
+  Serial.printf("[INFO] IMU WHO_AM_I 0x%02X\n", who);
+  if(who != MPU6500_WHOAMI && who != MPU9250_WHOAMI){
+    Serial.println("[ERR] IMU identity is not MPU6500/9250-compatible");
+    return false;
+  }
+
+  if(!mpuWrite(MPU_PWR_MGMT_1, 0x80)) return false; // reset
+  delay(100);
+  if(!mpuWrite(MPU_PWR_MGMT_1, 0x01)) return false; // PLL clock, awake
+  delay(100);
+  if(!mpuWrite(MPU_SMPLRT_DIV, 0x04)) return false;
+  if(!mpuWrite(MPU_CONFIG, 0x03)) return false;
+  if(!mpuWrite(MPU_GYRO_CONFIG, 0x08)) return false;  // +/-500 dps
+  if(!mpuWrite(MPU_ACCEL_CONFIG, 0x18)) return false; // +/-16 g
+  if(!mpuWrite(MPU_ACCEL_CONFIG2, 0x03)) return false;
+  if(!mpuWrite(MPU_INT_PIN_CFG, 0x22)) return false;
+  if(!mpuWrite(MPU_INT_ENABLE, 0x01)) return false;
+  return true;
+}
+
+bool mpuRead(float &ax, float &ay, float &az, float &gx, float &gy, float &gz){
+  int16_t rax, ray, raz, rgx, rgy, rgz;
+  if(!mpuRead16(0x3B, rax)) return false;
+  if(!mpuRead16(0x3D, ray)) return false;
+  if(!mpuRead16(0x3F, raz)) return false;
+  if(!mpuRead16(0x43, rgx)) return false;
+  if(!mpuRead16(0x45, rgy)) return false;
+  if(!mpuRead16(0x47, rgz)) return false;
+  ax = (float)rax / MPU_ACCEL_LSB_PER_G;
+  ay = (float)ray / MPU_ACCEL_LSB_PER_G;
+  az = (float)raz / MPU_ACCEL_LSB_PER_G;
+  gx = (float)rgx / MPU_GYRO_LSB_PER_DPS;
+  gy = (float)rgy / MPU_GYRO_LSB_PER_DPS;
+  gz = (float)rgz / MPU_GYRO_LSB_PER_DPS;
+  return true;
+}
+
 void estimateRotation(float ax, float ay, float az, float &rx, float &ry){
   // The rocket's vertical/roll axis is MPU X. Treat MPU X as the old
   // longitudinal reference while preserving the existing two tilt outputs.
@@ -144,22 +254,27 @@ void setup(){
   Serial.begin(115200);
   Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(400000);
+  Wire.setClock(100000);
+  Wire.setTimeOut(50);
+  delay(500);
 
   Serial.println("GRCT_Firmware -- GROUND TEST ONLY (do not fly)");
+  printI2CScan();
 
-  int e = imu.init(imuCalib, IMU_ADDRESS);
-  if(e != 0){
-    Serial.printf("[ERR] IMU init code %d -- if wiring is good, change 'MPU9250 imu;' to 'MPU6500 imu;'\n", e);
+  if(!mpuBegin()){
+    Serial.println("[ERR] IMU init failed -- check MPU power, SDA/SCL, address, and chip type");
   } else {
     mpuReady = true;
-    imu.setGyroRange(500);   // deg/s
-    imu.setAccelRange(16);   // g
     Serial.println("[OK] IMU");
   }
   rollFilter.begin(GYRO_PROCESS_VAR, GYRO_MEASUREMENT_VAR);
 
-  if(!bmp585.begin((uint8_t)BMP585_ADDR)){
+  bool bmpFound = false;
+  for(int i = 0; i < 10 && !bmpFound; i++){
+    bmpFound = bmp585.begin((uint8_t)BMP585_ADDR);
+    if(!bmpFound) delay(250);
+  }
+  if(!bmpFound){
     Serial.println("[ERR] BMP585 not found");
   } else {
     bmp585.setTemperatureOversampling(BMP5XX_OVERSAMPLING_1X);
@@ -176,10 +291,22 @@ void setup(){
   ledcAttach(CANARD2_PIN, SERVO_FREQ_HZ, 16);
   setCanards(0.0f);
 
+  pinMode(SD_CS_PIN, OUTPUT);
+  digitalWrite(SD_CS_PIN, HIGH);
   sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
-  if(!SD.begin(SD_CS_PIN, sdSPI)){
-    Serial.println("[ERR] SD init -- logging disabled");
+  if(!SD.begin(SD_CS_PIN, sdSPI, 400000)){
+    Serial.println("[ERR] SD init failed at 400 kHz -- logging disabled");
+  } else if(SD.cardType() == CARD_NONE){
+    Serial.println("[ERR] SD init found no card -- logging disabled");
   } else {
+    uint8_t cardType = SD.cardType();
+    Serial.print("[OK] SD card ");
+    if(cardType == CARD_MMC) Serial.print("MMC");
+    else if(cardType == CARD_SD) Serial.print("SDSC");
+    else if(cardType == CARD_SDHC) Serial.print("SDHC/SDXC");
+    else Serial.print("UNKNOWN");
+    Serial.printf(" %llu MB\n", SD.cardSize() / (1024ULL * 1024ULL));
+
     String fn = nextLogName("GRCT");
     logFile = SD.open(fn.c_str(), FILE_WRITE);
     if(logFile){
@@ -214,17 +341,25 @@ void loop(){
     float rawRoll = 0, filtRoll = 0, rotx = 0, roty = 0, cmd = 0;
 
     if(mpuReady){
-      imu.update();
-      imu.getAccel(&accelData);
-      imu.getGyro(&gyroData);
-      ax = accelData.accelX; ay = accelData.accelY; az = accelData.accelZ;
-      gx = gyroData.gyroX;   gy = gyroData.gyroY;   gz = gyroData.gyroZ;
-      // MPU X is the rocket's roll axis. Re-verify the positive sign on the bench.
-      rawRoll  = gx;
-      filtRoll = rollFilter.update(rawRoll);
-      estimateRotation(ax, ay, az, rotx, roty);
-      cmd = clampf(ROLL_RATE_GAIN * (TARGET_ROLL_RATE - filtRoll) - TILT_GAIN * roty,
-                   -MAX_FIN_DEFLECTION, MAX_FIN_DEFLECTION);
+      if(mpuRead(ax, ay, az, gx, gy, gz)){
+        imuReadFailures = 0;
+        // MPU X is the rocket's roll axis. Re-verify the positive sign on the bench.
+        rawRoll  = gx;
+        filtRoll = rollFilter.update(rawRoll);
+        estimateRotation(ax, ay, az, rotx, roty);
+        cmd = clampf(ROLL_RATE_GAIN * (TARGET_ROLL_RATE - filtRoll) - TILT_GAIN * roty,
+                     -MAX_FIN_DEFLECTION, MAX_FIN_DEFLECTION);
+      } else {
+        imuReadFailures++;
+        if(nowMs - lastImuWarn >= 1000){
+          lastImuWarn = nowMs;
+          Serial.println("[WARN] IMU read failed");
+        }
+        if(imuReadFailures >= IMU_MAX_READ_FAILURES){
+          mpuReady = false;
+          Serial.println("[ERR] IMU disabled after repeated read failures");
+        }
+      }
     }
     setCanards(cmd);   // cmd is 0 when IMU is not ready
 

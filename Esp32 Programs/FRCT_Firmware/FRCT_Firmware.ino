@@ -43,10 +43,10 @@
 #define BMP585_ADDR  BMP5XX_DEFAULT_ADDRESS   // 0x46
 #define CANARD1_PIN  26
 #define CANARD2_PIN  25
-#define SD_SCK_PIN   14
-#define SD_MISO_PIN  27
-#define SD_MOSI_PIN  13
-#define SD_CS_PIN    33
+#define SD_SCK_PIN   14  // ADA254 CLK
+#define SD_MISO_PIN  27  // ADA254 DO
+#define SD_MOSI_PIN  13  // ADA254 DI
+#define SD_CS_PIN    33  // ADA254 CS
 
 // ---- Servo PWM ----
 #define SERVO_FREQ_HZ 50
