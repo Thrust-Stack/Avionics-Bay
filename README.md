@@ -137,7 +137,7 @@ onboard regulator, so use its `5V` input from the avionics 5V rail.
 | Servo    | Signal Pin | Notes         |
 |----------|------------|---------------|
 | Canard 1 | GPIO 26    | Roll fin      |
-| Canard 2 | GPIO 25    | Roll fin (differential — opposite of Canard 1) |
+| Canard 2 | GPIO 25    | Roll fin (same signed deflection as Canard 1) |
 
 > PWM: 50Hz, pulse range 500–2400μs, neutral ≈1450μs (90°) — matches the
 > firmware's `angleToPWM16()`.

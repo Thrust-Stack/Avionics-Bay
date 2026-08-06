@@ -111,12 +111,11 @@ uint32_t angleToPWM16(float angle) {
   return (uint32_t)(us / 20000.0f * 65535.0f);
 }
 
-// Apply a differential fin deflection to both canards
-// Positive fin_command deflects canard 1 up and canard 2 down (and vice versa)
+// Apply the same signed roll deflection to both canards.
 void setCanards(float fin_command) {
   fin_command = constrain(fin_command, -MAX_DEFLECTION, MAX_DEFLECTION);
   float angle1 = NEUTRAL_ANGLE + fin_command;
-  float angle2 = NEUTRAL_ANGLE - fin_command;
+  float angle2 = NEUTRAL_ANGLE + fin_command;
   ledcWrite(CANARD1_PIN, angleToPWM16(angle1));
   ledcWrite(CANARD2_PIN, angleToPWM16(angle2));
   Serial.printf("[ROLL] cmd=%.2f  canard1=%.1f  canard2=%.1f\n",

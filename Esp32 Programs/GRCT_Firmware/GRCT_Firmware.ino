@@ -126,8 +126,8 @@ uint32_t angleToPWM16(float angle){
 
 void setCanards(float fin_command){
   fin_command = clampf(fin_command, -MAX_FIN_DEFLECTION, MAX_FIN_DEFLECTION);
-  lastCanard1 = NEUTRAL_ANGLE + fin_command;   // differential
-  lastCanard2 = NEUTRAL_ANGLE - fin_command;
+  lastCanard1 = NEUTRAL_ANGLE + fin_command;
+  lastCanard2 = NEUTRAL_ANGLE + fin_command;
   ledcWrite(CANARD1_PIN, angleToPWM16(lastCanard1));
   ledcWrite(CANARD2_PIN, angleToPWM16(lastCanard2));
 }
