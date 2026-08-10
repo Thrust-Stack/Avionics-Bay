@@ -12,7 +12,8 @@
  *   canards neutral for the rest of the flight.
  *
  * On-board: reads MPU9250/6500 (I2C) + BMP585 (I2C) + GPS (UART2), drives two
- * canard servos (LEDC PWM), and logs everything to microSD (CSV).
+ * canard servos (LEDC PWM), logs everything to microSD (CSV), and forwards
+ * flight-format telemetry packets to the avionics Heltec.
  *
  * Libraries: FastIMU, Adafruit BMP5xx, Adafruit Unified Sensor, TinyGPSPlus.
  * Wiring: see README.md. Board: NodeMCU-32S. Card must be FAT32.
@@ -47,12 +48,17 @@
 #define SD_MISO_PIN  27  // ADA254 DO
 #define SD_MOSI_PIN  13  // ADA254 DI
 #define SD_CS_PIN    33  // ADA254 CS
+#define HELTEC_TX_PIN 19  // ESP32 TX -> Heltec GPIO44 U0RXD
+#define HELTEC_BAUD   115200
 
 // ---- Servo PWM ----
 #define SERVO_FREQ_HZ 50
 #define SERVO_MIN_US  500
 #define SERVO_MAX_US  2400
 #define NEUTRAL_ANGLE 90.0f
+
+// MPU reads are converted to g; the Heltec bridge wants m/s^2.
+#define G_TO_MS2 9.80665f
 
 // ---- Rate damping (PRE/POST test) ----
 #define TARGET_ROLL_RATE   0.0f
@@ -74,8 +80,10 @@
 // ---- Timing ----
 #define CONTROL_PERIOD_MS 10    // 100 Hz
 #define BMP_PERIOD_MS     100   // 10 Hz
+#define HELTEC_IMU_MS      50   // 20 Hz, matches the flight telemetry bridge
 #define SD_FLUSH_MS       250
 #define STATUS_PRINT_MS   250
+#define GPS_LINE_CAPACITY 96
 
 // ---- State machine ----
 enum State { PRE_TEST, ROLL_TEST, POST_TEST, FAILSAFE_LOCK };
@@ -110,8 +118,11 @@ float rollAngle = 0.0f;        // gyro-integrated; only meaningful during the te
 int   altAboveCount = 0;
 unsigned long testStartMs = 0, holdStartMs = 0;
 float setpoint = 0.0f, setpointRate = 0.0f;
-unsigned long lastControl = 0, lastBmp = 0, lastFlush = 0, lastStatus = 0;
+unsigned long lastControl = 0, lastBmp = 0, lastHeltecImu = 0, lastFlush = 0, lastStatus = 0;
 unsigned long lastControlMicros = 0;
+char gpsLine[GPS_LINE_CAPACITY + 1] = {};
+size_t gpsLineLength = 0;
+bool discardOversizeGpsLine = false;
 
 // ---- Helpers ----
 static inline float clampf(float v, float lo, float hi){
@@ -130,6 +141,44 @@ void setCanards(float fin_command){
   lastCanard2 = NEUTRAL_ANGLE + fin_command;
   ledcWrite(CANARD1_PIN, angleToPWM16(lastCanard1));
   ledcWrite(CANARD2_PIN, angleToPWM16(lastCanard2));
+}
+
+void forwardGpsCharToHeltec(char c){
+  if(c == '\n'){
+    if(!discardOversizeGpsLine && gpsLineLength > 0){
+      gpsLine[gpsLineLength] = '\0';
+      if(gpsLine[0] == '$'){
+        Serial1.print(gpsLine);
+        Serial1.write('\n');
+      }
+    }
+    gpsLineLength = 0;
+    discardOversizeGpsLine = false;
+    return;
+  }
+
+  if(discardOversizeGpsLine) return;
+
+  if(gpsLineLength < GPS_LINE_CAPACITY){
+    gpsLine[gpsLineLength++] = c;
+  } else {
+    gpsLineLength = 0;
+    discardOversizeGpsLine = true;
+  }
+}
+
+void sendHeltecImu(float axMs2, float ayMs2, float azMs2, float gxDps, float gyDps, float gzDps){
+  char imuLine[96];
+  snprintf(imuLine, sizeof(imuLine), "$IMU,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+           axMs2, ayMs2, azMs2,
+           gxDps * DEG_TO_RAD, gyDps * DEG_TO_RAD, gzDps * DEG_TO_RAD);
+  Serial1.print(imuLine);
+}
+
+void sendHeltecAlt(float aglMeters){
+  char altLine[32];
+  snprintf(altLine, sizeof(altLine), "$ALT,%.2f\n", aglMeters);
+  Serial1.print(altLine);
 }
 
 float rateDampCommand(float rollRate){
@@ -153,6 +202,7 @@ String nextLogName(const char* prefix){
 
 void setup(){
   Serial.begin(115200);
+  Serial1.begin(HELTEC_BAUD, SERIAL_8N1, -1, HELTEC_TX_PIN);
   Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(400000);
@@ -208,7 +258,12 @@ void setup(){
 }
 
 void loop(){
-  while(Serial2.available()) gps.encode(Serial2.read());
+  while(Serial2.available()){
+    char c = Serial2.read();
+    gps.encode(c);
+    forwardGpsCharToHeltec(c);
+  }
+
   unsigned long nowMs = millis();
 
   // BMP altitude at 10 Hz; arm the roll test here on consecutive samples > 200 m
@@ -216,6 +271,7 @@ void loop(){
     lastBmp = nowMs;
     if(bmp585.performReading()){
       altitudeM = 44330.0f * (1.0f - powf(bmp585.pressure / groundPressure, 0.1903f));
+      sendHeltecAlt(altitudeM);
       if(state == PRE_TEST){
         if(altitudeM > ROLL_TEST_ALTITUDE_M) altAboveCount++;
         else                                 altAboveCount = 0;
@@ -292,6 +348,12 @@ void loop(){
     }
 
     setCanards(cmd);
+    float axMs2 = ax * G_TO_MS2, ayMs2 = ay * G_TO_MS2, azMs2 = az * G_TO_MS2;
+
+    if(fresh && nowMs - lastHeltecImu >= HELTEC_IMU_MS){
+      lastHeltecImu = nowMs;
+      sendHeltecImu(axMs2, ayMs2, azMs2, gx, gy, gz);
+    }
 
     if(sdReady && logFile){
       const char* ph = (state == ROLL_TEST) ? phaseName(phase) : "-";

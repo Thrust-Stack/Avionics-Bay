@@ -3,15 +3,13 @@
  *
  * Direct ESP32D UART wiring:
  *   ESP32D GPIO 19 (TX) -> Heltec GPIO 44 (U0RXD)
- *   ESP32D GPIO 18 (RX) <- Heltec GPIO 43 (U0TXD)
  *   ESP32D GND          -> Heltec GND
  *
  * UART packet contract:
  *   ESP32D -> Heltec: raw GPS NMEA, $IMU,...\n, and $ALT,...\n
- *   Heltec -> ESP32D: ROLL,<angle>\n
  *
  * Build this avionics-side sketch with "USB CDC On Boot: Disabled" so Serial
- * is hardware UART0 on GPIO 44/43. Serial is protocol-only in direct mode:
+ * is hardware UART0 RX on GPIO 44. Serial is protocol-only in direct mode:
  * never print status or debug messages to it.
  *
  * Requires RadioLib. Select the exact Heltec WiFi LoRa 32 V4 board/revision
@@ -24,8 +22,8 @@
 #include <cmath>
 #include <cstdlib>
 
-// Direct ESP32D UART: 115200 baud, 8 data bits, no parity, 1 stop bit.
-// HardwareSerial.begin() takes RX before TX: GPIO 44 U0RXD, GPIO 43 U0TXD.
+// Direct ESP32D UART RX: 115200 baud, 8 data bits, no parity, 1 stop bit.
+// HardwareSerial.begin() takes RX before TX: GPIO 44 U0RXD, TX disabled.
 
 // Heltec V4 SX1262 and GC1109 front-end pins.
 constexpr int LORA_SCK = 9;
@@ -45,8 +43,6 @@ constexpr uint8_t LORA_CODING_RATE = 5;   // 5 means coding rate 4/5
 constexpr uint8_t LORA_SYNC_WORD = 0x12;  // private point-to-point link
 constexpr int8_t LORA_TX_POWER_DBM = 14;
 constexpr uint16_t LORA_PREAMBLE_SYMBOLS = 8;
-constexpr uint32_t COMMAND_RX_DWELL_MS = 250;
-
 // SX1262 LoRa packets are limited to 255 bytes. Leave room for the newline.
 constexpr size_t UART_LINE_CAPACITY = 220;
 constexpr size_t TELEMETRY_QUEUE_DEPTH = 8;
@@ -65,7 +61,6 @@ String activeTransmission;
 
 volatile bool radioOperationDone = false;
 bool radioTransmitting = false;
-uint32_t radioReceiveStartedMs = 0;
 
 void IRAM_ATTR setRadioFlag() {
   radioOperationDone = true;
@@ -143,75 +138,18 @@ void readEsp32Telemetry() {
   }
 }
 
-bool normalizeRollCommand(String& command) {
-  while (command.endsWith("\n") || command.endsWith("\r")) {
-    command.remove(command.length() - 1);
-  }
-
-  if (!command.startsWith("ROLL,")) {
-    return false;
-  }
-
-  const char* valueStart = command.c_str() + 5;
-  char* valueEnd = nullptr;
-  const float angle = strtof(valueStart, &valueEnd);
-  if (valueEnd == valueStart || !std::isfinite(angle)) {
-    return false;
-  }
-
-  while (*valueEnd == ' ' || *valueEnd == '\t') {
-    ++valueEnd;
-  }
-  return *valueEnd == '\0';
-}
-
-void writeEsp32Command(String command) {
-  if (!normalizeRollCommand(command)) {
-    return;
-  }
-
-  // Esp32_sensor_bridge expects exactly one newline-delimited ROLL command.
-  Serial.print(command);
-  Serial.write('\n');
-}
-
 void haltForRadioError();
-
-bool startRadioReceive() {
-  const int16_t state = radio.startReceive();
-  radioTransmitting = false;
-  radioReceiveStartedMs = millis();
-  return state == RADIOLIB_ERR_NONE;
-}
 
 void handleCompletedRadioOperation() {
   if (radioTransmitting) {
     radio.finishTransmit();
     activeTransmission = "";
-    if (!startRadioReceive()) {
-      haltForRadioError();
-    }
-    return;
   }
-
-  String command;
-  if (radio.readData(command) == RADIOLIB_ERR_NONE) {
-    writeEsp32Command(command);
-  }
-  if (!startRadioReceive()) {
-    haltForRadioError();
-  }
+  radioTransmitting = false;
 }
 
 void startQueuedTransmission() {
   if (radioTransmitting || queueCount == 0) {
-    return;
-  }
-
-  // Reserve an explicit receive window after every radio operation so a
-  // continuously full telemetry queue cannot starve ROLL command downlinks.
-  if (static_cast<uint32_t>(millis() - radioReceiveStartedMs) <
-      COMMAND_RX_DWELL_MS) {
     return;
   }
 
@@ -224,9 +162,7 @@ void startQueuedTransmission() {
     radioTransmitting = true;
   } else {
     activeTransmission = "";
-    if (!startRadioReceive()) {
-      haltForRadioError();
-    }
+    radioTransmitting = false;
   }
 }
 
@@ -239,7 +175,7 @@ void haltForRadioError() {
 
 void setup() {
   Serial.setRxBufferSize(2048);
-  Serial.begin(115200, SERIAL_8N1, 44, 43);
+  Serial.begin(115200, SERIAL_8N1, 44, -1);
 
   pinMode(LORA_FEM_EN, OUTPUT);
   digitalWrite(LORA_FEM_EN, HIGH);
@@ -262,10 +198,6 @@ void setup() {
   radio.explicitHeader();
   radio.setDio2AsRfSwitch(true);
   radio.setDio1Action(setRadioFlag);
-
-  if (!startRadioReceive()) {
-    haltForRadioError();
-  }
 }
 
 void loop() {

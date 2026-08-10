@@ -16,8 +16,7 @@
  * Wiring (see README.md):
  *   I2C  SDA=23  SCL=32          Canards  1=GPIO26  2=GPIO25
  *   ADA254 SD  CLK=14 DO=27 DI=13 CS=33   GPS UART2 RX=16 TX=17
- *   Heltec UART RX=18 TX=19       ESP32 TX19 -> Heltec GPIO44,
- *                                 ESP32 RX18 <- Heltec GPIO43
+ *   Heltec UART TX=19            ESP32 TX19 -> Heltec GPIO44
  *
  * Board: NodeMCU-32S.  Card must be FAT32.
  */
@@ -43,7 +42,6 @@
 #define SD_MISO_PIN  27  // ADA254 DO
 #define SD_MOSI_PIN  13  // ADA254 DI
 #define SD_CS_PIN    33  // ADA254 CS
-#define HELTEC_RX_PIN 18  // ESP32 RX <- Heltec GPIO43 U0TXD
 #define HELTEC_TX_PIN 19  // ESP32 TX -> Heltec GPIO44 U0RXD
 #define HELTEC_BAUD   115200
 
@@ -320,7 +318,7 @@ String nextLogName(const char* prefix){
 
 void setup(){
   Serial.begin(115200);
-  Serial1.begin(HELTEC_BAUD, SERIAL_8N1, HELTEC_RX_PIN, HELTEC_TX_PIN);
+  Serial1.begin(HELTEC_BAUD, SERIAL_8N1, -1, HELTEC_TX_PIN);
   Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(100000);
@@ -402,10 +400,6 @@ void loop(){
     gps.encode(c);
     forwardGpsCharToHeltec(c);
   }
-
-  // GRCT computes its own actuation. Drain any LoRa downlink command bytes so
-  // the UART RX buffer cannot fill if the ground side sends ROLL commands.
-  while(Serial1.available()) Serial1.read();
 
   unsigned long nowMs = millis();
 

@@ -15,14 +15,14 @@ MPU9250/6500 (I2C  GPIO 23/32)───┼──► ESP32 ──(SPI 13/14/27/33
                                   │
                                   ├──(PWM GPIO 26)──► Canard 1 servo
                                   ├──(PWM GPIO 25)──► Canard 2 servo
-                                  └──(UART1 GPIO 19/18)◄──► Heltec (U0 GPIO 44/43)
+                                  └──(UART1 GPIO 19)──► Heltec (U0 GPIO 44)
 
 Power: 2S LiPo ──► buck step-down ──► ESP32 5V/VIN (+ servo & SD 5V rail)
 ```
 
 > **Direct-mode architecture:** the ESP32 remains responsible for its sensors,
-> canard actuation, and SD logging. The ESP32D and Heltec communicate directly
-> over GPIO 19/18; the Raspberry Pi 5 is no longer in this comm path. GPIO
+> canard actuation, and SD logging. The ESP32D sends telemetry directly to the
+> Heltec over GPIO 19; the Raspberry Pi 5 is no longer in this comm path. GPIO
 > 27/33 remain assigned to the microSD SPI bus.
 
 ---
@@ -33,7 +33,7 @@ Power: 2S LiPo ──► buck step-down ──► ESP32 5V/VIN (+ servo & SD 5V 
 |------|----------------|---------------------------|------------|
 | 16   | UART2 RX       | GPS TX                    | Green      |
 | 17   | UART2 TX       | GPS RX                    | Blue       |
-| 18   | UART1 RX       | Heltec GPIO 43 (U0TXD)    | —          |
+| 18   | Reserved       | Not connected for Heltec one-way telemetry | — |
 | 19   | UART1 TX       | Heltec GPIO 44 (U0RXD)    | —          |
 | 23   | I2C SDA        | BMP585 SDA + IMU SDA      | Yellow     |
 | 32   | I2C SCL        | BMP585 SCL + IMU SCL      | Orange     |
@@ -121,7 +121,7 @@ onboard regulator, so use its `5V` input from the avionics 5V rail.
 | CD         | —         | Optional card-detect pin; leave unconnected |
 
 > Card must be formatted **FAT32**.
-> GPIO 18/19 are reserved for the direct Heltec UART and are not used for SPI.
+> GPIO 19 is reserved for the direct Heltec telemetry UART and is not used for SPI.
 > Firmware init: `SPIClass sdSPI(HSPI); sdSPI.begin(14,27,13,33); SD.begin(33,sdSPI);`
 
 ---
@@ -158,33 +158,33 @@ onboard regulator, so use its `5V` input from the avionics 5V rail.
 
 ---
 
-## Direct ESP32D ↔ Heltec wiring
+## Direct ESP32D -> Heltec wiring
 
-This is a direct 3.3 V serial link between the ESP32D and the avionics Heltec.
-The Raspberry Pi 5 is no longer required for this communication path.
+This is a one-way 3.3 V serial telemetry link from the ESP32D to the avionics
+Heltec. The Raspberry Pi 5 is no longer required for this communication path,
+and the avionics Heltec only sends packets to the ground station.
 
 | ESP32D connection | Heltec connection    | Direction                         |
 |-------------------|----------------------|-----------------------------------|
 | GPIO 19 (TX)      | GPIO 44 (U0RXD)      | ESP32D telemetry → Heltec         |
-| GPIO 18 (RX)      | GPIO 43 (U0TXD)      | Heltec commands → ESP32D          |
 | GND               | GND                  | Common ground — required          |
 
 > UART settings on both ends: **115200 baud, 8 data bits, no parity, 1 stop
 > bit** (`SERIAL_8N1`).
 >
-> ESP32D → Heltec packets remain newline-delimited GPS NMEA, `$IMU,...`, and
-> `$ALT,...` lines. Heltec → ESP32D commands remain `ROLL,<angle>\n`.
+> ESP32D -> Heltec packets remain newline-delimited GPS NMEA, `$IMU,...`, and
+> `$ALT,...` lines. There is no Heltec -> ESP32D command path in this setup.
 >
-> This pinout assumes GPIO 18/19 are operational on the selected ESP32D.
+> This pinout assumes GPIO 19 is operational on the selected ESP32D.
 >
 > The avionics-side firmware is
 > `Communication/HeltecV4TelemetryTransmitter/HeltecV4TelemetryTransmitter.ino`.
 > Build it with **USB CDC On Boot: Disabled** so `Serial` is hardware UART0 on
-> GPIO 44/43. UART0 is protocol-only in this mode; do not send debug text on it.
-> Its LoRa side uses a bounded queue and explicit command-receive windows; when
-> RF airtime is slower than the UART stream, it retains newer complete packets
-> instead of allowing the queue to grow without limit.
-> If UART0 wiring interferes with a Heltec upload, disconnect TX/RX or hold the
+> GPIO 44. UART0 is protocol-only in this mode; do not send debug text on it.
+> Its LoRa side uses a bounded telemetry queue; when RF airtime is slower than
+> the UART stream, it retains newer complete packets instead of allowing the
+> queue to grow without limit.
+> If UART0 wiring interferes with a Heltec upload, disconnect ESP32D TX or hold the
 > ESP32D quiet while flashing, then reconnect the direct link.
 
 ---
