@@ -11,13 +11,15 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+import time
 
 import serial
 
 
-DEFAULT_PORT = "XXXX"
+DEFAULT_PORT = "COM9"
 DEFAULT_BAUD = 115200
 DEFAULT_LOG_FILE = Path(__file__).with_name("telemetry_log.txt")
+DEFAULT_RECONNECT_DELAY_S = 1.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +48,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Write raw received lines to the log without a timestamp prefix.",
     )
+    parser.add_argument(
+        "--reconnect-delay",
+        default=DEFAULT_RECONNECT_DELAY_S,
+        type=float,
+        help=(
+            "Seconds to wait before reopening the serial port after a USB "
+            f"disconnect. Default: {DEFAULT_RECONNECT_DELAY_S}"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -53,36 +64,63 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def open_serial_port(port: str, baud: int) -> serial.Serial:
+    ser = serial.Serial()
+    ser.port = port
+    ser.baudrate = baud
+    ser.timeout = 1
+    ser.rtscts = False
+    ser.dsrdtr = False
+    ser.rts = False
+    ser.dtr = True
+    ser.open()
+    return ser
+
+
 def main() -> int:
     args = parse_args()
     log_path = args.log
 
     try:
-        with serial.Serial(args.port, args.baud, timeout=1) as ser, log_path.open(
-            "a", encoding="utf-8"
-        ) as log_file:
-            print(
-                f"Listening on {args.port} at {args.baud} baud. Logging to {log_path}",
-                flush=True,
-            )
-
+        with log_path.open("a", encoding="utf-8") as log_file:
             while True:
-                raw_line = ser.readline()
-                if not raw_line:
-                    continue
+                try:
+                    with open_serial_port(args.port, args.baud) as ser:
+                        print(
+                            (
+                                f"Listening on {args.port} at {args.baud} baud. "
+                                f"Logging to {log_path}"
+                            ),
+                            flush=True,
+                        )
 
-                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-                print(line, flush=True)
+                        while True:
+                            raw_line = ser.readline()
+                            if not raw_line:
+                                continue
 
-                if args.no_timestamp:
-                    log_file.write(f"{line}\n")
-                else:
-                    log_file.write(f"{utc_timestamp()} {line}\n")
-                log_file.flush()
+                            line = raw_line.decode("utf-8", errors="replace").rstrip(
+                                "\r\n"
+                            )
+                            print(line, flush=True)
 
-    except serial.SerialException as exc:
-        print(f"Serial error opening or reading {args.port}: {exc}", file=sys.stderr)
-        return 1
+                            if args.no_timestamp:
+                                log_file.write(f"{line}\n")
+                            else:
+                                log_file.write(f"{utc_timestamp()} {line}\n")
+                            log_file.flush()
+
+                except serial.SerialException as exc:
+                    print(
+                        (
+                            f"Serial error on {args.port}: {exc}. "
+                            f"Retrying in {args.reconnect_delay:.1f}s..."
+                        ),
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    time.sleep(max(args.reconnect_delay, 0.1))
+
     except KeyboardInterrupt:
         print("\nStopped.")
         return 0

@@ -41,7 +41,7 @@ constexpr float LORA_BANDWIDTH_KHZ = 125.0;
 constexpr uint8_t LORA_SPREADING_FACTOR = 7;
 constexpr uint8_t LORA_CODING_RATE = 5;   // 5 means coding rate 4/5
 constexpr uint8_t LORA_SYNC_WORD = 0x12;  // private point-to-point link
-constexpr int8_t LORA_TX_POWER_DBM = 14;
+constexpr int8_t LORA_TX_POWER_DBM = 22;  // SX1262 practical max for Heltec V4 915 MHz
 constexpr uint16_t LORA_PREAMBLE_SYMBOLS = 8;
 // SX1262 LoRa packets are limited to 255 bytes. Leave room for the newline.
 constexpr size_t UART_LINE_CAPACITY = 220;

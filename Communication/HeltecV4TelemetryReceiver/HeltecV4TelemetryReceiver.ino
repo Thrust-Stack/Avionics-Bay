@@ -48,6 +48,7 @@ constexpr uint8_t LORA_SYNC_WORD = 0x12;  // private point-to-point link
 constexpr int8_t LORA_TX_POWER_DBM = 14;
 constexpr uint16_t LORA_PREAMBLE_SYMBOLS = 8;
 constexpr uint32_t RX_LED_PULSE_MS = 25;
+constexpr uint32_t SERIAL_CONNECT_WAIT_MS = 5000;
 
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
@@ -101,7 +102,11 @@ void printPayloadLine(const String& payload) {
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  const uint32_t serialWaitStarted = millis();
+  while (!Serial && millis() - serialWaitStarted < SERIAL_CONNECT_WAIT_MS) {
+    delay(10);
+  }
+  delay(250);
 
   Serial.println("# Heltec V4 telemetry receiver booting");
 
