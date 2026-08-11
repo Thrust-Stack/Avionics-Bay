@@ -47,10 +47,13 @@ constexpr uint8_t LORA_CODING_RATE = 5;   // 5 means coding rate 4/5
 constexpr uint8_t LORA_SYNC_WORD = 0x12;  // private point-to-point link
 constexpr int8_t LORA_TX_POWER_DBM = 14;
 constexpr uint16_t LORA_PREAMBLE_SYMBOLS = 8;
+constexpr uint32_t RX_LED_PULSE_MS = 25;
 
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
 volatile bool radioPacketReady = false;
+bool rxLedPulseActive = false;
+uint32_t rxLedOffAt = 0;
 
 void IRAM_ATTR setRadioFlag() {
   radioPacketReady = true;
@@ -62,6 +65,19 @@ bool takeRadioFlag() {
   radioPacketReady = false;
   interrupts();
   return wasSet;
+}
+
+void pulseRxLed() {
+  digitalWrite(LED_BUILTIN, HIGH);
+  rxLedPulseActive = true;
+  rxLedOffAt = millis() + RX_LED_PULSE_MS;
+}
+
+void updateRxLed() {
+  if (rxLedPulseActive && static_cast<int32_t>(millis() - rxLedOffAt) >= 0) {
+    digitalWrite(LED_BUILTIN, LOW);
+    rxLedPulseActive = false;
+  }
 }
 
 void haltForRadioError(const char* message, int16_t state) {
@@ -88,6 +104,9 @@ void setup() {
   delay(1000);
 
   Serial.println("# Heltec V4 telemetry receiver booting");
+
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
 
   pinMode(LORA_FEM_EN, OUTPUT);
   digitalWrite(LORA_FEM_EN, HIGH);
@@ -120,6 +139,8 @@ void setup() {
 }
 
 void loop() {
+  updateRxLed();
+
   if (!takeRadioFlag()) {
     return;
   }
@@ -129,6 +150,7 @@ void loop() {
 
   if (state == RADIOLIB_ERR_NONE) {
     printPayloadLine(payload);
+    pulseRxLed();
   } else if (state != RADIOLIB_ERR_CRC_MISMATCH) {
     Serial.print("# radio.readData failed: ");
     Serial.println(state);

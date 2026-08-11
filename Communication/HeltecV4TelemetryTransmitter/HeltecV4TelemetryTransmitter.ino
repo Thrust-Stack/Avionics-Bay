@@ -46,6 +46,7 @@ constexpr uint16_t LORA_PREAMBLE_SYMBOLS = 8;
 // SX1262 LoRa packets are limited to 255 bytes. Leave room for the newline.
 constexpr size_t UART_LINE_CAPACITY = 220;
 constexpr size_t TELEMETRY_QUEUE_DEPTH = 8;
+constexpr uint32_t TX_LED_PULSE_MS = 25;
 
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
@@ -61,6 +62,8 @@ String activeTransmission;
 
 volatile bool radioOperationDone = false;
 bool radioTransmitting = false;
+bool txLedPulseActive = false;
+uint32_t txLedOffAt = 0;
 
 void IRAM_ATTR setRadioFlag() {
   radioOperationDone = true;
@@ -72,6 +75,19 @@ bool takeRadioFlag() {
   radioOperationDone = false;
   interrupts();
   return wasSet;
+}
+
+void pulseTxLed() {
+  digitalWrite(LED_BUILTIN, HIGH);
+  txLedPulseActive = true;
+  txLedOffAt = millis() + TX_LED_PULSE_MS;
+}
+
+void updateTxLed() {
+  if (txLedPulseActive && static_cast<int32_t>(millis() - txLedOffAt) >= 0) {
+    digitalWrite(LED_BUILTIN, LOW);
+    txLedPulseActive = false;
+  }
 }
 
 void enqueueTelemetry(const String& packet) {
@@ -142,7 +158,10 @@ void haltForRadioError();
 
 void handleCompletedRadioOperation() {
   if (radioTransmitting) {
-    radio.finishTransmit();
+    const int16_t state = radio.finishTransmit();
+    if (state == RADIOLIB_ERR_NONE) {
+      pulseTxLed();
+    }
     activeTransmission = "";
   }
   radioTransmitting = false;
@@ -177,6 +196,9 @@ void setup() {
   Serial.setRxBufferSize(2048);
   Serial.begin(115200, SERIAL_8N1, 44, -1);
 
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+
   pinMode(LORA_FEM_EN, OUTPUT);
   digitalWrite(LORA_FEM_EN, HIGH);
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
@@ -202,6 +224,7 @@ void setup() {
 
 void loop() {
   readEsp32Telemetry();
+  updateTxLed();
 
   if (takeRadioFlag()) {
     handleCompletedRadioOperation();

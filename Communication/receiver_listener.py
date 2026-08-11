@@ -2,8 +2,7 @@
 
 The paired Heltec receiver sketch forwards LoRa payloads as newline-delimited
 USB serial text. Lines beginning with "# " are receiver diagnostics; telemetry
-payloads from the avionics ESP32D are normally GPS NMEA, $IMU, $ALT, or $CTRL
-lines.
+payloads from the avionics ESP32D are normally GPS NMEA, $IMU, or $ALT lines.
 """
 
 from __future__ import annotations
@@ -16,9 +15,9 @@ import sys
 import serial
 
 
-DEFAULT_PORT = "COM9"
+DEFAULT_PORT = "XXXX"
 DEFAULT_BAUD = 115200
-DEFAULT_LOG_FILE = "telemetry_log.txt"
+DEFAULT_LOG_FILE = Path(__file__).with_name("telemetry_log.txt")
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--log",
         default=DEFAULT_LOG_FILE,
+        type=Path,
         help=f"Path to append received lines. Default: {DEFAULT_LOG_FILE}",
     )
     parser.add_argument(
@@ -55,7 +55,7 @@ def utc_timestamp() -> str:
 
 def main() -> int:
     args = parse_args()
-    log_path = Path(args.log)
+    log_path = args.log
 
     try:
         with serial.Serial(args.port, args.baud, timeout=1) as ser, log_path.open(
