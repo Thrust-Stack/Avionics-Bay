@@ -8,6 +8,7 @@
  * roll-position hold around the boot-time zero angle, drives two canard servos
  * (LEDC PWM), logs every sample plus canard angles to microSD (SPI, CSV),
  * and forwards flight-format telemetry packets to the avionics Heltec.
+ * Heltec downlink lines: GPS NMEA, $IMU, $ALT, and $CTRL.
  *
  * Libraries (Arduino IDE -> Manage Libraries):
  *   Adafruit BMP5xx, Adafruit Unified Sensor, TinyGPSPlus.
@@ -52,11 +53,11 @@
 #define NEUTRAL_ANGLE 90.0f
 
 // ---- Ground-test control ----
-// GRCT zeros roll angle at boot. A 45 deg roll commands roughly full fin
-// deflection and keeps that deflection until the body is returned toward 0 deg.
+// GRCT zeros roll angle at boot. A 45 deg roll commands roughly 15 deg of fin
+// deflection; larger roll errors clamp at 45 deg until the body returns toward 0 deg.
 #define TARGET_ROLL_ANGLE_DEG 0.0f
 #define ROLL_POSITION_GAIN    0.333f
-#define MAX_FIN_DEFLECTION    15.0f
+#define MAX_FIN_DEFLECTION    45.0f
 #define GYRO_PROCESS_VAR      0.1f
 #define GYRO_MEASUREMENT_VAR  4.0f
 #define GYRO_BIAS_SAMPLES     100
@@ -84,6 +85,7 @@
 #define CONTROL_PERIOD_MS 20    // 50 Hz (GRCT.py used 0.02 s)
 #define BMP_PERIOD_MS     100   // 10 Hz
 #define HELTEC_IMU_MS      50   // 20 Hz, matches the flight telemetry bridge
+#define HELTEC_CTRL_MS    100   // 10 Hz controller/filter/canard state downlink
 #define SD_FLUSH_MS       250
 #define STATUS_PRINT_MS   500
 #define STATUS_HEADER_EVERY 20  // re-print the column header every N rows
@@ -102,7 +104,7 @@ float altitudeM = 0.0f;
 float lastCanard1 = NEUTRAL_ANGLE, lastCanard2 = NEUTRAL_ANGLE;
 float rollAngleDeg = 0.0f;
 float gyroXBiasDps = 0.0f;
-unsigned long lastControl = 0, lastBmp = 0, lastHeltecImu = 0, lastFlush = 0, lastStatus = 0;
+unsigned long lastControl = 0, lastBmp = 0, lastHeltecImu = 0, lastHeltecCtrl = 0, lastFlush = 0, lastStatus = 0;
 unsigned long lineNo = 0;      // one per control sample, shared by SD + serial
 uint16_t statusRows = 0;
 uint8_t imuReadFailures = 0;
@@ -180,6 +182,16 @@ void sendHeltecAlt(float aglMeters){
   char altLine[32];
   snprintf(altLine, sizeof(altLine), "$ALT,%.2f\n", aglMeters);
   Serial1.print(altLine);
+}
+
+void sendHeltecControl(unsigned long nowMs, bool imuFresh, float rawRollRate,
+                       float filtRollRate, float rollAngle, float cmd){
+  char ctrlLine[160];
+  snprintf(ctrlLine, sizeof(ctrlLine),
+           "$CTRL,%lu,GRCT,%d,%.2f,%.2f,%.2f,%.2f,%.1f,%.1f,%.3f\n",
+           nowMs, imuFresh ? 1 : 0, rawRollRate, filtRollRate,
+           rollAngle, cmd, lastCanard1, lastCanard2, gyroXBiasDps);
+  Serial1.print(ctrlLine);
 }
 
 bool mpuWrite(uint8_t reg, uint8_t value){
@@ -454,6 +466,11 @@ void loop(){
     if(imuFresh && nowMs - lastHeltecImu >= HELTEC_IMU_MS){
       lastHeltecImu = nowMs;
       sendHeltecImu(axMs2, ayMs2, azMs2, gx, gy, gz);
+    }
+
+    if(nowMs - lastHeltecCtrl >= HELTEC_CTRL_MS){
+      lastHeltecCtrl = nowMs;
+      sendHeltecControl(nowMs, imuFresh, rawRollRate, filtRollRate, rollAngleDeg, cmd);
     }
 
     if(sdReady && logFile){

@@ -14,6 +14,7 @@
  * On-board: reads MPU9250/6500 (I2C) + BMP585 (I2C) + GPS (UART2), drives two
  * canard servos (LEDC PWM), logs everything to microSD (CSV), and forwards
  * flight-format telemetry packets to the avionics Heltec.
+ * Heltec downlink lines: GPS NMEA, $IMU, $ALT, and $CTRL.
  *
  * Libraries: FastIMU, Adafruit BMP5xx, Adafruit Unified Sensor, TinyGPSPlus.
  * Wiring: see README.md. Board: NodeMCU-32S. Card must be FAT32.
@@ -81,6 +82,7 @@
 #define CONTROL_PERIOD_MS 10    // 100 Hz
 #define BMP_PERIOD_MS     100   // 10 Hz
 #define HELTEC_IMU_MS      50   // 20 Hz, matches the flight telemetry bridge
+#define HELTEC_CTRL_MS    100   // 10 Hz controller/canard state downlink
 #define SD_FLUSH_MS       250
 #define STATUS_PRINT_MS   250
 #define GPS_LINE_CAPACITY 96
@@ -118,7 +120,7 @@ float rollAngle = 0.0f;        // gyro-integrated; only meaningful during the te
 int   altAboveCount = 0;
 unsigned long testStartMs = 0, holdStartMs = 0;
 float setpoint = 0.0f, setpointRate = 0.0f;
-unsigned long lastControl = 0, lastBmp = 0, lastHeltecImu = 0, lastFlush = 0, lastStatus = 0;
+unsigned long lastControl = 0, lastBmp = 0, lastHeltecImu = 0, lastHeltecCtrl = 0, lastFlush = 0, lastStatus = 0;
 unsigned long lastControlMicros = 0;
 char gpsLine[GPS_LINE_CAPACITY + 1] = {};
 size_t gpsLineLength = 0;
@@ -179,6 +181,19 @@ void sendHeltecAlt(float aglMeters){
   char altLine[32];
   snprintf(altLine, sizeof(altLine), "$ALT,%.2f\n", aglMeters);
   Serial1.print(altLine);
+}
+
+void sendHeltecControl(unsigned long nowMs, State currentState, Phase currentPhase, bool fresh,
+                       float rollRate, float rollAngleDeg, float rollSetpoint,
+                       float rollSetpointRate, float cmd){
+  const char* phaseText = (currentState == ROLL_TEST) ? phaseName(currentPhase) : "-";
+  char ctrlLine[180];
+  snprintf(ctrlLine, sizeof(ctrlLine),
+           "$CTRL,%lu,FRCT,%s,%s,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.1f,%.1f\n",
+           nowMs, stateName(currentState), phaseText, fresh ? 1 : 0,
+           rollRate, rollAngleDeg, rollSetpoint, rollSetpointRate,
+           cmd, lastCanard1, lastCanard2);
+  Serial1.print(ctrlLine);
 }
 
 float rateDampCommand(float rollRate){
@@ -353,6 +368,12 @@ void loop(){
     if(fresh && nowMs - lastHeltecImu >= HELTEC_IMU_MS){
       lastHeltecImu = nowMs;
       sendHeltecImu(axMs2, ayMs2, azMs2, gx, gy, gz);
+    }
+
+    if(nowMs - lastHeltecCtrl >= HELTEC_CTRL_MS){
+      lastHeltecCtrl = nowMs;
+      sendHeltecControl(nowMs, state, phase, fresh, rollRate, rollAngle,
+                        setpoint, setpointRate, cmd);
     }
 
     if(sdReady && logFile){

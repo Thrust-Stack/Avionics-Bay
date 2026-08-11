@@ -8,6 +8,7 @@
  * On-board: reads MPU9250/6500 (I2C) + BMP585 (I2C) + GPS (UART2), computes the
  * fin command, drives two canard servos (LEDC PWM), logs to microSD (CSV), and
  * forwards flight-format telemetry packets to the avionics Heltec.
+ * Heltec downlink lines: GPS NMEA, $IMU, $ALT, and $CTRL.
  *
  * Libraries: FastIMU, Adafruit BMP5xx, Adafruit Unified Sensor, TinyGPSPlus.
  * Wiring: see README.md. Board: NodeMCU-32S. Card must be FAT32.
@@ -63,6 +64,7 @@
 #define CONTROL_PERIOD_MS 10    // 100 Hz (BRC.py used 0.01 s)
 #define BMP_PERIOD_MS     100   // 10 Hz
 #define HELTEC_IMU_MS      50   // 20 Hz, matches the flight telemetry bridge
+#define HELTEC_CTRL_MS    100   // 10 Hz controller/canard state downlink
 #define SD_FLUSH_MS       250
 #define STATUS_PRINT_MS   500
 #define GPS_LINE_CAPACITY 96
@@ -81,7 +83,7 @@ bool  mpuReady = false, bmpReady = false, sdReady = false;
 float groundPressure = 1013.25f;
 float altitudeM = 0.0f;
 float lastCanard1 = NEUTRAL_ANGLE, lastCanard2 = NEUTRAL_ANGLE;
-unsigned long lastControl = 0, lastBmp = 0, lastHeltecImu = 0, lastFlush = 0, lastStatus = 0;
+unsigned long lastControl = 0, lastBmp = 0, lastHeltecImu = 0, lastHeltecCtrl = 0, lastFlush = 0, lastStatus = 0;
 char gpsLine[GPS_LINE_CAPACITY + 1] = {};
 size_t gpsLineLength = 0;
 bool discardOversizeGpsLine = false;
@@ -141,6 +143,16 @@ void sendHeltecAlt(float aglMeters){
   char altLine[32];
   snprintf(altLine, sizeof(altLine), "$ALT,%.2f\n", aglMeters);
   Serial1.print(altLine);
+}
+
+void sendHeltecControl(unsigned long nowMs, const char* state, bool fresh, bool allowed,
+                       float rollRate, float rotx, float roty, float cmd){
+  char ctrlLine[160];
+  snprintf(ctrlLine, sizeof(ctrlLine),
+           "$CTRL,%lu,BRC,%s,%d,%d,%.2f,%.2f,%.2f,%.2f,%.1f,%.1f\n",
+           nowMs, state, fresh ? 1 : 0, allowed ? 1 : 0,
+           rollRate, rotx, roty, cmd, lastCanard1, lastCanard2);
+  Serial1.print(ctrlLine);
 }
 
 void estimateRotation(float ax, float ay, float az, float &rx, float &ry){
@@ -267,6 +279,11 @@ void loop(){
     if(fresh && nowMs - lastHeltecImu >= HELTEC_IMU_MS){
       lastHeltecImu = nowMs;
       sendHeltecImu(axMs2, ayMs2, azMs2, gx, gy, gz);
+    }
+
+    if(nowMs - lastHeltecCtrl >= HELTEC_CTRL_MS){
+      lastHeltecCtrl = nowMs;
+      sendHeltecControl(nowMs, state, fresh, allowed, rollRate, rotx, roty, cmd);
     }
 
     if(sdReady && logFile){

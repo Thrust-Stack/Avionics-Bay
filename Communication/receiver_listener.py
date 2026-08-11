@@ -2,7 +2,8 @@
 
 The paired Heltec receiver sketch forwards LoRa payloads as newline-delimited
 USB serial text. Lines beginning with "# " are receiver diagnostics; telemetry
-payloads from the avionics ESP32D are normally GPS NMEA, $IMU, or $ALT lines.
+payloads from the avionics ESP32D are normally GPS NMEA, $IMU, $ALT, or $CTRL
+lines.
 """
 
 from __future__ import annotations
