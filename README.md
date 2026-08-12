@@ -178,7 +178,7 @@ and the avionics Heltec only sends packets to the ground station.
 > This pinout assumes GPIO 19 is operational on the selected ESP32D.
 >
 > The avionics-side firmware is
-> `Communication/HeltecV4TelemetryTransmitter/HeltecV4TelemetryTransmitter.ino`.
+> `Communication/TransmitterHeltec/TransmitterHeltec.ino`.
 > Build it with **USB CDC On Boot: Disabled** so `Serial` is hardware UART0 on
 > GPIO 44. UART0 is protocol-only in this mode; do not send debug text on it.
 > Its LoRa side uses a bounded telemetry queue; when RF airtime is slower than
@@ -198,6 +198,52 @@ and the avionics Heltec only sends packets to the ground station.
 | BMP585        | 3.3V    | ESP32 3.3V pin      |
 | MPU9250/6500  | 3.3V    | ESP32 3.3V pin      |
 | ADA254 microSD| 5V      | 5V rail (buck)      |
+
+---
+
+## Ground station: dual raw + CSV logging
+
+The `Communication/receiver_listener.py` script now supports writing both a
+raw text log (the legacy `telemetry_log.txt`) and a structured CSV file
+(`telemetry_log.csv` by default). Use `--csv <path>` to set the CSV path and
+`--no-raw` to disable the raw text log when only structured rows are desired.
+Each CSV row contains: `timestamp`, `type`, `raw`, and `parsed` (JSON) columns.
+
+This makes automated processing, spreadsheet analysis, and compact terminal
+summaries much easier while still preserving full raw telemetry for debugging.
+
+## Binary LoRa telemetry format (Heltec V4)
+
+The avionics transmitter now packs a compact fixed-size binary frame before
+sending over LoRa. The ground receiver decodes and prints a `BIN,...` ASCII
+line over USB for the laptop listener. The frame layout (big-endian) is:
+
+- `version` (1 byte)
+- `type` (1 byte)
+- `seq` (2 bytes)
+- `timestamp` (4 bytes)
+- `lat` (4 bytes, int32, degrees * 1e7)
+- `lon` (4 bytes, int32, degrees * 1e7)
+- `alt_mm` (4 bytes, int32, millimeters)
+- `speed_cms` (2 bytes, uint16, cm/s)
+- `heading_cd` (2 bytes, uint16, centi-degrees)
+- `pitch_cd` (2 bytes, int16, centi-degrees)
+- `roll_cd` (2 bytes, int16, centi-degrees)
+- `yaw_cd` (2 bytes, int16, centi-degrees)
+- `battery_mv` (2 bytes, uint16)
+- `status` (1 byte)
+- `crc16` (2 bytes)
+
+Why this helps:
+- The binary frame is far smaller than repeating verbose NMEA and ASCII fields,
+    reducing airtime and increasing effective range for the same RF settings.
+- Fixed-size numeric fields encode values compactly and avoid the cost of ASCII
+    decimal digits. Using a small application CRC16 provides end-to-end payload
+    integrity even if radio CRC is enabled.
+
+The Arduino sketches in `Communication/TransmitterHeltec/TransmitterHeltec.ino`
+and `Communication/ReceiverHeltec/ReceiverHeltec.ino` implement this packing and
+decoding.
 | 2× Canards    | 5V      | Dedicated 5V BEC / buck |
 
 ---
