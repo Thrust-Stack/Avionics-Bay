@@ -317,6 +317,121 @@ def make_summary(pkt_type: str, parsed: Dict[str, Any]) -> str | None:
     return None
 
 
+def make_terminal_summary(pkt_type: str, parsed: Dict[str, Any]) -> str | None:
+    # Display every parsed sensor field in terminal-friendly units.
+    try:
+        def fmt_num(value: Any, digits: int = 2) -> str:
+            if isinstance(value, float):
+                return f"{value:.{digits}f}"
+            return str(value)
+
+        def append_field(parts: list[str], label: str, value: Any,
+                         suffix: str = "", digits: int = 2) -> None:
+            if value is not None:
+                parts.append(f"{label}={fmt_num(value, digits)}{suffix}")
+
+        def append_remaining(parts: list[str], used: set[str]) -> None:
+            for key, value in parsed.items():
+                if key not in used:
+                    append_field(parts, key, value)
+
+        if pkt_type == 'TRACK':
+            parts = ['TRACK']
+            lat = parsed.get('lat')
+            lon = parsed.get('lon')
+            if lat is not None and lon is not None:
+                parts.append(f"gps={lat:.7f},{lon:.7f}")
+            append_field(parts, 'alt', parsed.get('alt_m'), 'm', 1)
+            append_remaining(parts, {'lat', 'lon', 'alt_m'})
+            return ' '.join(parts)
+
+        if pkt_type == 'EVENT':
+            parts = ['EVENT']
+            append_remaining(parts, set())
+            return ' '.join(parts)
+
+        if pkt_type == 'BIN':
+            parts = ['BIN']
+            used = set()
+
+            for key in ('ver', 'type', 'seq', 'ts'):
+                append_field(parts, key, parsed.get(key), digits=0)
+                used.add(key)
+
+            lat = parsed.get('lat')
+            lon = parsed.get('lon')
+            if lat is not None and lon is not None:
+                parts.append(f"gps={lat / 10000000.0:.7f},{lon / 10000000.0:.7f}")
+                used.update(('lat', 'lon'))
+
+            conversions = (
+                ('alt_mm', 'alt', 'm', 1000.0, 2),
+                ('speed_cms', 'speed', 'm/s', 100.0, 2),
+                ('heading_cd', 'heading', 'deg', 100.0, 2),
+                ('pitch_cd', 'pitch', 'deg', 100.0, 2),
+                ('roll_cd', 'roll', 'deg', 100.0, 2),
+                ('yaw_cd', 'yaw', 'deg', 100.0, 2),
+            )
+            for key, label, suffix, scale, digits in conversions:
+                value = parsed.get(key)
+                if value is not None:
+                    parts.append(f"{label}={value / scale:.{digits}f}{suffix}")
+                    used.add(key)
+
+            append_field(parts, 'bat', parsed.get('bat_mv'), 'mV', digits=0)
+            used.add('bat_mv')
+            append_field(parts, 'status', parsed.get('status'), digits=0)
+            used.add('status')
+            append_remaining(parts, used)
+            return ' '.join(parts)
+
+        if pkt_type == 'GPRMC' or pkt_type == 'GPGGA':
+            parts = [pkt_type]
+            used = set()
+            lat = parsed.get('lat')
+            lon = parsed.get('lon')
+            if lat is not None and lon is not None:
+                parts.append(f"gps={lat:.6f},{lon:.6f}")
+                used.update(('lat', 'lon'))
+            spd = parsed.get('speed_m_s')
+            if spd is not None:
+                parts.append(f"speed={spd:.1f}m/s")
+                used.add('speed_m_s')
+            hdg = parsed.get('track_deg') or parsed.get('heading')
+            if hdg is not None:
+                parts.append(f"track={hdg:.1f}deg")
+                used.update(('track_deg', 'heading'))
+            append_remaining(parts, used)
+            return ' '.join(parts)
+
+        if pkt_type == 'IMU':
+            parts = ['IMU']
+            for key in ('ax', 'ay', 'az', 'gx', 'gy', 'gz'):
+                append_field(parts, key, parsed.get(key), digits=3)
+            append_remaining(parts, {'ax', 'ay', 'az', 'gx', 'gy', 'gz'})
+            return ' '.join(parts)
+
+        if pkt_type == 'ALT':
+            parts = ['ALT']
+            append_field(parts, 'alt', parsed.get('alt_m'), 'm', 2)
+            append_remaining(parts, {'alt_m'})
+            return ' '.join(parts)
+
+        if pkt_type == 'CTRL':
+            parts = ['CTRL']
+            append_field(parts, 'seq', parsed.get('seq'), digits=0)
+            append_field(parts, 'craft', parsed.get('craft'))
+            append_field(parts, 'mode', parsed.get('mode'))
+            vals = parsed.get('values', [])
+            for idx, value in enumerate(vals):
+                append_field(parts, f'v{idx}', value)
+            append_remaining(parts, {'seq', 'craft', 'mode', 'values'})
+            return ' '.join(parts)
+    except Exception:
+        return None
+    return None
+
+
 def main() -> int:
     args = parse_args()
     log_path = args.log
@@ -358,7 +473,7 @@ def main() -> int:
 
                         # Parse packet type and produce compact terminal summary
                         pkt_type, parsed = parse_packet(line)
-                        summary = make_summary(pkt_type, parsed)
+                        summary = make_terminal_summary(pkt_type, parsed)
                         if summary:
                             print(summary, flush=True)
                         else:

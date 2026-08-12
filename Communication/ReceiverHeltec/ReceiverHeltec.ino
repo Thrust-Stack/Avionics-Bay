@@ -42,7 +42,7 @@ constexpr int LORA_FEM_EN = 2;
 // Both Heltec radios must use identical settings.
 constexpr float LORA_FREQUENCY_MHZ = 915.0;
 constexpr float LORA_BANDWIDTH_KHZ = 125.0;
-constexpr uint8_t LORA_SPREADING_FACTOR = 7;
+constexpr uint8_t LORA_SPREADING_FACTOR = 8;
 constexpr uint8_t LORA_CODING_RATE = 5;   // 5 means coding rate 4/5
 constexpr uint8_t LORA_SYNC_WORD = 0x12;  // private point-to-point link
 constexpr int8_t LORA_TX_POWER_DBM = 14;
