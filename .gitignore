@@ -8,3 +8,6 @@ __pycache__/
 
 # Virtual environment
 .venv/
+
+# Local-only test sketches
+Esp32 Programs/Servo_Sweep_Test/
