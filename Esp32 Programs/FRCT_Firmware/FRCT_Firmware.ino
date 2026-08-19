@@ -56,7 +56,17 @@
 #define SERVO_FREQ_HZ 50
 #define SERVO_MIN_US  500
 #define SERVO_MAX_US  2400
-#define NEUTRAL_ANGLE 90.0f
+// RC servos provide no position feedback. Set this to the PWM angle that
+// matches the canards' physical startup/neutral position.
+#ifndef STARTING_CANARD_POSITION_DEG
+#define STARTING_CANARD_POSITION_DEG 90.0f
+#endif
+#ifndef STARTING_CANARD1_POSITION_DEG
+#define STARTING_CANARD1_POSITION_DEG STARTING_CANARD_POSITION_DEG
+#endif
+#ifndef STARTING_CANARD2_POSITION_DEG
+#define STARTING_CANARD2_POSITION_DEG STARTING_CANARD_POSITION_DEG
+#endif
 
 // MPU reads are converted to g; the Heltec bridge wants m/s^2.
 #define G_TO_MS2 9.80665f
@@ -112,7 +122,9 @@ File logFile;
 bool  mpuReady = false, bmpReady = false, sdReady = false;
 float groundPressure = 1013.25f;
 float altitudeM = 0.0f;
-float lastCanard1 = NEUTRAL_ANGLE, lastCanard2 = NEUTRAL_ANGLE;
+float neutralCanard1Angle = STARTING_CANARD1_POSITION_DEG;
+float neutralCanard2Angle = STARTING_CANARD2_POSITION_DEG;
+float lastCanard1 = STARTING_CANARD1_POSITION_DEG, lastCanard2 = STARTING_CANARD2_POSITION_DEG;
 
 State state = PRE_TEST;
 Phase phase = RAMP_UP;
@@ -139,8 +151,8 @@ uint32_t angleToPWM16(float angle){
 
 void setCanards(float fin_command){
   fin_command = clampf(fin_command, -MAX_FIN_DEFLECTION, MAX_FIN_DEFLECTION);
-  lastCanard1 = NEUTRAL_ANGLE + fin_command;
-  lastCanard2 = NEUTRAL_ANGLE + fin_command;
+  lastCanard1 = clampf(neutralCanard1Angle + fin_command, 0.0f, 180.0f);
+  lastCanard2 = clampf(neutralCanard2Angle + fin_command, 0.0f, 180.0f);
   ledcWrite(CANARD1_PIN, angleToPWM16(lastCanard1));
   ledcWrite(CANARD2_PIN, angleToPWM16(lastCanard2));
 }

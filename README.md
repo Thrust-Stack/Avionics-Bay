@@ -139,8 +139,11 @@ onboard regulator, so use its `5V` input from the avionics 5V rail.
 | Canard 1 | GPIO 26    | Roll fin      |
 | Canard 2 | GPIO 25    | Roll fin (same signed deflection as Canard 1) |
 
-> PWM: 50Hz, pulse range 500–2400μs, neutral ≈1450μs (90°) — matches the
-> firmware's `angleToPWM16()`.
+> PWM: 50Hz, pulse range 500–2400μs. The firmware treats
+> `STARTING_CANARD_POSITION_DEG` as neutral, with optional
+> `STARTING_CANARD1_POSITION_DEG` / `STARTING_CANARD2_POSITION_DEG` per-servo
+> overrides, then applies signed fin commands relative to those
+> startup/calibrated positions through `angleToPWM16()`.
 > ⚠️ Never power servos from the ESP32 — use the dedicated 5V BEC/buck.
 
 ---

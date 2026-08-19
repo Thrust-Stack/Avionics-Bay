@@ -22,8 +22,17 @@
 #define SERVO_MAX_US  2400
 #define SERVO_PWM_BITS 16
 
-// Literal servo angle to hold. Set to 90.0f if you want the repo's neutral angle.
-#define HOLD_ANGLE_DEG 90.0f
+// RC servos provide no position feedback. Set this to the PWM angle that
+// matches the canards' physical startup/neutral position.
+#ifndef STARTING_CANARD_POSITION_DEG
+#define STARTING_CANARD_POSITION_DEG 90.0f
+#endif
+#ifndef STARTING_CANARD1_POSITION_DEG
+#define STARTING_CANARD1_POSITION_DEG STARTING_CANARD_POSITION_DEG
+#endif
+#ifndef STARTING_CANARD2_POSITION_DEG
+#define STARTING_CANARD2_POSITION_DEG STARTING_CANARD_POSITION_DEG
+#endif
 
 #define REASSERT_PERIOD_MS 1000
 #define STATUS_PERIOD_MS   2000
@@ -41,9 +50,8 @@ uint32_t angleToPWM16(float angleDeg) {
 }
 
 void writeHoldAngle() {
-  const uint32_t duty = angleToPWM16(HOLD_ANGLE_DEG);
-  ledcWrite(CANARD1_PIN, duty);
-  ledcWrite(CANARD2_PIN, duty);
+  ledcWrite(CANARD1_PIN, angleToPWM16(STARTING_CANARD1_POSITION_DEG));
+  ledcWrite(CANARD2_PIN, angleToPWM16(STARTING_CANARD2_POSITION_DEG));
 }
 
 void setup() {
@@ -58,8 +66,10 @@ void setup() {
   lastStatusMs = millis();
 
   Serial.println("[SERVO_HOLD_ZERO] both servos holding fixed angle");
-  Serial.print("[SERVO_HOLD_ZERO] angle_deg=");
-  Serial.print(HOLD_ANGLE_DEG, 1);
+  Serial.print("[SERVO_HOLD_ZERO] canard1_angle_deg=");
+  Serial.print(STARTING_CANARD1_POSITION_DEG, 1);
+  Serial.print(" canard2_angle_deg=");
+  Serial.print(STARTING_CANARD2_POSITION_DEG, 1);
   Serial.print(" canard1_gpio=");
   Serial.print(CANARD1_PIN);
   Serial.print(" canard2_gpio=");
