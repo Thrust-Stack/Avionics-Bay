@@ -31,16 +31,16 @@ Power: 2S LiPo ──► buck step-down ──► ESP32 5V/VIN (+ servo & SD 5V 
 
 | GPIO | Function       | Connected To              | Wire Color |
 |------|----------------|---------------------------|------------|
-| 16   | UART2 RX       | GPS TX                    | Green      |
-| 17   | UART2 TX       | GPS RX                    | Blue       |
+| 16   | UART2 RX       | GPS TX                    | —          |
+| 17   | UART2 TX       | GPS RX                    | —          |
 | 18   | Reserved       | Not connected for Heltec one-way telemetry | — |
 | 19   | UART1 TX       | Heltec GPIO 44 (U0RXD)    | —          |
-| 23   | I2C SDA        | BMP585 SDA + IMU SDA      | Yellow     |
-| 32   | I2C SCL        | BMP585 SCL + IMU SCL      | Orange     |
+| 23   | I2C SDA        | BMP585 SDA + IMU SDA      | —          |
+| 32   | I2C SCL        | BMP585 SCL + IMU SCL      | —          |
 | 13   | SPI MOSI (SD)  | ADA254 DI                 | —          |
 | 14   | SPI SCK (SD)   | ADA254 CLK                | —          |
-| 25   | PWM (Canard 2) | Canard 2 servo signal     | White      |
-| 26   | PWM (Canard 1) | Canard 1 servo signal     | White      |
+| 25   | PWM (Canard 2) | Canard 2 servo signal     | —          |
+| 26   | PWM (Canard 1) | Canard 1 servo signal     | —          |
 | 27   | SPI MISO (SD)  | ADA254 DO                 | —          |
 | 33   | SPI CS (SD)    | ADA254 CS                 | —          |
 | 3.3V | Power out      | GPS VIN, BMP585 VIN, IMU VCC | Red     |
